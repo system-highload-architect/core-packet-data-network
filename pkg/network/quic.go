@@ -30,15 +30,6 @@ func NewQUICConnClient(serverAddr string, tlsConfig *tls.Config) (*QUICConn, err
 	}, nil
 }
 
-// NewQUICListener создаёт QUIC-сервер (слушатель).
-func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*quic.Listener, error) {
-	addr, err := net.ResolveUDPAddr("udp", localAddr)
-	if err != nil {
-		return nil, err
-	}
-	return quic.ListenAddr(addr.String(), tlsConfig, nil)
-}
-
 // Send отправляет данные по QUIC (создаёт новый поток).
 func (q *QUICConn) Send(ctx context.Context, data []byte, addr net.Addr) error {
 	stream, err := q.conn.OpenStreamSync(ctx)
@@ -57,7 +48,6 @@ func (q *QUICConn) Receive(ctx context.Context) (*Message, error) {
 		return nil, err
 	}
 	defer stream.Close()
-	// Читаем данные из потока
 	buf := make([]byte, 65535)
 	n, err := stream.Read(buf)
 	if err != nil {
@@ -70,11 +60,31 @@ func (q *QUICConn) Receive(ctx context.Context) (*Message, error) {
 }
 
 // Close закрывает QUIC-соединение.
-func (q *QUICConn) Close() error {
+func (q *QUICConn) Close(ctx context.Context) error {
 	return q.conn.CloseWithError(0, "closed")
+}
+
+// CloseWithError закрывает с ошибкой.
+func (q *QUICConn) CloseWithError(code quic.ApplicationErrorCode, reason string) error {
+	return q.conn.CloseWithError(code, reason)
 }
 
 // Addr возвращает локальный адрес.
 func (q *QUICConn) Addr() net.Addr {
 	return q.addr
+}
+
+// RemoteAddr возвращает удалённый адрес.
+func (q *QUICConn) RemoteAddr() net.Addr {
+	return q.conn.RemoteAddr()
+}
+
+// AcceptStream принимает новый поток (для сервера).
+func (q *QUICConn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
+	return q.conn.AcceptStream(ctx)
+}
+
+// OpenStreamSync открывает поток синхронно (для клиента).
+func (q *QUICConn) OpenStreamSync(ctx context.Context) (*quic.Stream, error) {
+	return q.conn.OpenStreamSync(ctx)
 }

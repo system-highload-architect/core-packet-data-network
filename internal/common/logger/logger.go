@@ -12,6 +12,13 @@ type Logger struct {
 	logger *slog.Logger
 }
 
+const (
+	LevelDebug = slog.LevelDebug
+	LevelInfo  = slog.LevelInfo
+	LevelWarn  = slog.LevelWarn
+	LevelError = slog.LevelError
+)
+
 // Option определяет настройку логгера.
 type Option func(*options)
 

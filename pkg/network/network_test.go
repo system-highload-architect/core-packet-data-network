@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"testing"
@@ -144,7 +145,7 @@ func TestQUICConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("QUIC listener error: %v", err)
 	}
-	defer listener.Close()
+	defer listener.Close(ctx)
 
 	errCh := make(chan error, 1)
 
@@ -154,28 +155,34 @@ func TestQUICConn(t *testing.T) {
 			errCh <- fmt.Errorf("accept failed: %w", err)
 			return
 		}
-		defer conn.CloseWithError(0, "done")
+		defer conn.Close(ctx) // QUICConn.Close вызывает CloseWithError
 
-		stream, err := conn.AcceptStream(ctx)
+		stream, err := conn.conn.AcceptStream(ctx) // доступ к *quic.Conn
 		if err != nil {
 			errCh <- fmt.Errorf("accept stream failed: %w", err)
 			return
 		}
-		// Не закрываем поток здесь
+		defer stream.Close()
 
+		var received []byte
 		buf := make([]byte, 1024)
-		n, err := stream.Read(buf)
-		if err != nil {
-			errCh <- fmt.Errorf("read failed: %w", err)
-			return
+		for {
+			n, err := stream.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				errCh <- fmt.Errorf("read failed: %w", err)
+				return
+			}
+			received = append(received, buf[:n]...)
 		}
-		if string(buf[:n]) != "hello" {
-			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(buf[:n]))
+		if string(received) != "hello" {
+			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(received))
 			return
 		}
 		_, err = stream.Write([]byte("ack"))
 		errCh <- err
-		// Не закрываем поток
 	}()
 
 	clientConfig := tlsConfig.Clone()
@@ -184,8 +191,9 @@ func TestQUICConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("QUIC client error: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(ctx)
 
+	// Открываем поток через базовое соединение
 	stream, err := client.conn.OpenStreamSync(ctx)
 	if err != nil {
 		t.Fatalf("open stream error: %v", err)
