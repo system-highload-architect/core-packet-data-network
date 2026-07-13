@@ -1,29 +1,56 @@
 package zeroalloc
 
-import "bytes"
-
-// Buffer is a reusable buffer that wraps bytes.Buffer and resets on Get.
+// Buffer — переиспользуемый байтовый буфер.
 type Buffer struct {
-	pool *Pool[*bytes.Buffer]
+	buf []byte
 }
 
-// NewBuffer creates a new buffer pool.
-func NewBuffer() *Buffer {
+// NewBuffer создаёт буфер с начальной ёмкостью.
+func NewBuffer(cap int) *Buffer {
 	return &Buffer{
-		pool: NewPool(func() *bytes.Buffer {
-			return &bytes.Buffer{}
-		}),
+		buf: make([]byte, 0, cap),
 	}
 }
 
-// Get returns a cleared buffer.
-func (b *Buffer) Get() *bytes.Buffer {
-	buf := b.pool.Get()
-	buf.Reset()
-	return buf
+// Reset обнуляет длину, но сохраняет ёмкость.
+func (b *Buffer) Reset() {
+	b.buf = b.buf[:0]
 }
 
-// Put returns the buffer to the pool.
-func (b *Buffer) Put(buf *bytes.Buffer) {
-	b.pool.Put(buf)
+// Write добавляет байты в буфер.
+func (b *Buffer) Write(p []byte) {
+	b.buf = append(b.buf, p...)
+}
+
+// WriteByte добавляет один байт.
+func (b *Buffer) WriteByte(c byte) {
+	b.buf = append(b.buf, c)
+}
+
+// Bytes возвращает текущий срез.
+func (b *Buffer) Bytes() []byte {
+	return b.buf
+}
+
+// Len возвращает длину.
+func (b *Buffer) Len() int {
+	return len(b.buf)
+}
+
+// Cap возвращает ёмкость.
+func (b *Buffer) Cap() int {
+	return cap(b.buf)
+}
+
+// Grow увеличивает ёмкость буфера.
+func (b *Buffer) Grow(n int) {
+	if cap(b.buf)-len(b.buf) < n {
+		newCap := cap(b.buf) * 2
+		if newCap < len(b.buf)+n {
+			newCap = len(b.buf) + n
+		}
+		newBuf := make([]byte, len(b.buf), newCap)
+		copy(newBuf, b.buf)
+		b.buf = newBuf
+	}
 }

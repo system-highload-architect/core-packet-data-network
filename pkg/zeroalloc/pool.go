@@ -1,29 +1,32 @@
 package zeroalloc
 
-import "sync"
+import (
+	"sync"
+)
 
-// Pool is a type-safe wrapper around sync.Pool.
+// Pool предоставляет типизированный sync.Pool.
 type Pool[T any] struct {
 	pool sync.Pool
+	New  func() T
 }
 
-// NewPool creates a new Pool with the given constructor function.
+// NewPool создаёт новый пул с фабричной функцией.
 func NewPool[T any](newFn func() T) *Pool[T] {
-	return &Pool[T]{
-		pool: sync.Pool{
-			New: func() any {
-				return newFn()
-			},
-		},
+	p := &Pool[T]{
+		New: newFn,
 	}
+	p.pool.New = func() interface{} {
+		return p.New()
+	}
+	return p
 }
 
-// Get returns an item from the pool.
+// Get возвращает объект из пула.
 func (p *Pool[T]) Get() T {
 	return p.pool.Get().(T)
 }
 
-// Put returns an item to the pool.
-func (p *Pool[T]) Put(item T) {
-	p.pool.Put(item)
+// Put возвращает объект в пул.
+func (p *Pool[T]) Put(x T) {
+	p.pool.Put(x)
 }
