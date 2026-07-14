@@ -1,80 +1,77 @@
-# Корень проекта
-ROOT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+.PHONY: build test bench certs clean run-udp-server run-udp-client
 
-# Go commands
-GOCMD := go
-GOBUILD := $(GOCMD) build
-GORUN := $(GOCMD) run
-GOTEST := $(GOCMD) test
-BENCHFLAGS := -bench=. -benchmem -timeout 30s
+# Переменные путей
+BINARY_DIR=bin
+CERT_DIR=certs
 
-# Build output
-BIN_DIR := bin
+# ==============================================================================
+# 1. СБОРКА И ТЕСТИРОВАНИЕ (BUILD & TEST)
+# ==============================================================================
 
-# TLS
-CERT_SCRIPT := scripts/generate-certs.sh
+# Сборка всех бинарников проекта «под ключ»
+build: clean
+	@echo "Compiling all project variants..."
+	@mkdir -p $(BINARY_DIR)
+	go build -o $(BINARY_DIR)/udp-server ./cmd/udp-server/main.go
+	go build -o $(BINARY_DIR)/udp-client ./cmd/udp-client/main.go
+	go build -o $(BINARY_DIR)/quic-server ./cmd/quic-server/main.go
+	go build -o $(BINARY_DIR)/quic-client ./cmd/quic-client/main.go
+	go build -o $(BINARY_DIR)/sctp-server ./cmd/sctp-server/main.go
+	go build -o $(BINARY_DIR)/sctp-client ./cmd/sctp-client/main.go
 
-.PHONY: all build clean certs run-udp run-udp-fec run-quic run-sctp bench test
-
-all: build
-
-build: certs
-	@echo "Building all clients and servers..."
-	@mkdir -p $(BIN_DIR)
-	$(GOBUILD) -o $(BIN_DIR)/udp-client ./cmd/udp-client
-	$(GOBUILD) -o $(BIN_DIR)/udp-server ./cmd/udp-server
-	$(GOBUILD) -o $(BIN_DIR)/udp-fec-client ./cmd/udp-fec-client
-	$(GOBUILD) -o $(BIN_DIR)/udp-fec-server ./cmd/udp-fec-server
-	$(GOBUILD) -o $(BIN_DIR)/quic-client ./cmd/quic-client
-	$(GOBUILD) -o $(BIN_DIR)/quic-server ./cmd/quic-server
-	$(GOBUILD) -o $(BIN_DIR)/sctp-client ./cmd/sctp-client
-	$(GOBUILD) -o $(BIN_DIR)/sctp-server ./cmd/sctp-server
-	@echo "Build complete."
-
-certs:
-	bash $(CERT_SCRIPT)
-
-# Удобные цели для запуска пар (сервер + клиент) – в разных терминалах или с фоном
-run-udp:
-	@echo "Starting UDP server..."
-	$(GORUN) ./cmd/udp-server &
-	sleep 0.5
-	$(GORUN) ./cmd/udp-client
-	@echo "Stopping UDP server..."
-	killall udp-server 2>/dev/null || true
-
-run-udp-fec:
-	@echo "Starting UDP+FEC server..."
-	$(GORUN) ./cmd/udp-fec-server &
-	sleep 0.5
-	$(GORUN) ./cmd/udp-fec-client
-	@echo "Stopping UDP+FEC server..."
-	killall udp-fec-server 2>/dev/null || true
-
-run-quic:
-	@echo "Starting QUIC server..."
-	$(GORUN) ./cmd/quic-server &
-	sleep 1
-	$(GORUN) ./cmd/quic-client
-	@echo "Stopping QUIC server..."
-	killall quic-server 2>/dev/null || true
-
-run-sctp:
-	@echo "Starting SCTP server..."
-	$(GORUN) ./cmd/sctp-server &
-	sleep 0.5
-	$(GORUN) ./cmd/sctp-client
-	@echo "Stopping SCTP server..."
-	killall sctp-server 2>/dev/null || true
-
-# Запуск бенчмарков (требуется, чтобы сервер не был занят)
-bench:
-	@echo "Running benchmarks for all variants..."
-	$(GOTEST) $(BENCHFLAGS) ./internal/variants/...
-
+# Запуск всех юнит-тестов ядра инфраструктуры пакетов (pkg/) и вариантов
 test:
-	$(GOTEST) ./...
+	@echo "Running all core infrastructure tests..."
+	go test -v ./pkg/config/...
+	go test -v ./pkg/fec/...
+	go test -v ./pkg/lru/...
+	go test -v ./pkg/network/...
+	go test -v ./pkg/order/...
+	go test -v ./pkg/packet/...
+	go test -v ./pkg/pregen/...
+	go test -v ./pkg/shutdown/...
+	go test -v ./pkg/workerpool/...
+	go test -v ./pkg/zeroalloc/...
+	go test -v ./internal/common/...
+	go test -v ./internal/variants/...
 
+# ==============================================================================
+# 2. НАГРУЗОЧНОЕ ПРОФИЛИРОВАНИЕ (BENCHMARKS)
+# ==============================================================================
+
+# Запуск всех нагрузочных тестов производительности (RPS) с лимитом времени 30с
+# Примечание: SCTP бенчмарк на Windows автоматически уйдет в SKIP
+bench: certs
+	@echo "Launching high-performance benchmarks (30s timeout)..."
+	@echo "==> Running UDP Throughput Benchmark..."
+	go test -bench=BenchmarkUDPThroughput -benchmem -timeout 30s ./internal/variants/udp
+	@echo "==> Running QUIC Throughput Benchmark..."
+	go test -bench=BenchmarkQUICThroughput -benchmem -timeout 30s ./internal/variants/quic
+	@echo "==> Running UDP+FEC Throughput Benchmark..."
+	go test -bench=BenchmarkUDPFECThroughput -benchmem -timeout 30s ./internal/variants/udp-fec
+	@echo "==> Running SCTP Throughput Benchmark..."
+	go test -bench=BenchmarkSCTPThroughput -benchmem -timeout 30s ./internal/variants/sctp
+
+# Вспомогательная цель для генерации TLS сертификатов QUIC
+certs:
+	@chmod +x scripts/generate-certs.sh 2>/dev/null || true
+	@./scripts/generate-certs.sh
+
+# Полная очистка скомпилированных артефактов
 clean:
-	rm -rf $(BIN_DIR)
-	rm -rf certs
+	@echo "Cleaning up build artifacts..."
+	@rm -rf $(BINARY_DIR)
+
+# ==============================================================================
+# 3. ШОРТКАТЫ КОНСОЛЬНОГО ЗАПУСКА (CMD RUNNERS)
+# ==============================================================================
+
+# Быстрый запуск базового UDP сервера строго на порту :6000
+run-udp-server:
+	@echo "Starting basic UDP Server on 127.0.0.1:6000..."
+	go run ./cmd/udp-server/main.go --addr=127.0.0.1:6000
+
+# Быстрый запуск базового UDP клиента на отправку 10 000 пакетов в 10 потоков
+run-udp-client:
+	@echo "Launching basic UDP Client to transmit 10,000 packets..."
+	go run ./cmd/udp-client/main.go --server=127.0.0.1:6000 --packets=10000

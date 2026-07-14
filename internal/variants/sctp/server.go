@@ -95,7 +95,7 @@ func (s *Server) Run() error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer conn.Close(context.Background())
 
 	for {
 		select {
@@ -153,8 +153,7 @@ func (s *Server) processMessage(data []byte, conn *network.SCTPConn) {
 		}
 	}
 
-	// RU: Фиксированный массив на стеке из 9 байт, ноль аллокаций в куче
-	// EN: Fixed stack-allocated array of 9 bytes, zero heap allocations
+	// Фиксированный массив на стеке из 9 байт, ноль аллокаций в куче
 	var ackBuf [9]byte
 	binary.BigEndian.PutUint64(ackBuf[0:8], pkt.ID)
 	if checksumOK {
@@ -163,8 +162,7 @@ func (s *Server) processMessage(data []byte, conn *network.SCTPConn) {
 		ackBuf[8] = 0
 	}
 
-	// RU: Отправляем ACK обратно клиенту через SCTP-соединение
-	// EN: Stream the ACK back to the client via the SCTP connection
+	// Отправляем ACK обратно клиенту через SCTP-соединение
 	_ = conn.Send(context.Background(), ackBuf[:], nil)
 }
 
@@ -172,5 +170,5 @@ func (s *Server) Shutdown() {
 	close(s.stopCh)
 	close(s.jobs)
 	close(s.outputCh)
-	_ = s.listener.Close()
+	_ = s.listener.Close(context.Background())
 }

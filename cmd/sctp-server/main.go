@@ -11,8 +11,7 @@ import (
 )
 
 func main() {
-	// RU: Парсим адрес прослушивания из консоли
-	// EN: Parse listening network address from console flags
+	// Парсим адрес прослушивания из консоли
 	addr := flag.String("addr", "127.0.0.1:9000", "SCTP server listen address")
 	flag.Parse()
 
@@ -21,7 +20,7 @@ func main() {
 
 	cfg := sctp.DefaultConfig()
 	cfg.ServerAddr = *addr
-	cfg.BenchMode = false // RU: Включаем полноценный вывод результатов в поток | EN: Enable stream output mapping
+	cfg.BenchMode = false // Включаем полноценный вывод результатов в поток
 
 	server, err := sctp.NewServer(cfg, log, os.Stdout)
 	if err != nil {

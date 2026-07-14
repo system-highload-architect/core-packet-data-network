@@ -62,8 +62,7 @@ func TestCache_Finalizer(t *testing.T) {
 	}
 }
 
-// RU: Тестируем выталкивание элементов по слоям при наступлении таймаута (Timing Wheel)
-// EN: Validate sequential layered promotion routines upon deadline breach conditions
+// Тестируем выталкивание элементов по слоям при наступлении таймаута (Timing Wheel)
 func TestLayerCache_PromoteLayer(t *testing.T) {
 	configs := []LayerConfig{
 		{TTL: 10 * time.Millisecond}, // Слой 0
@@ -71,22 +70,18 @@ func TestLayerCache_PromoteLayer(t *testing.T) {
 		{TTL: 30 * time.Millisecond}, // Слой 2
 	}
 
-	// RU: Используем явный указатель на время для защиты от рассинхронизации
-	// EN: Use an explicit time pointer to prevent closure desynchronization
+	// Используем явный указатель на время для защиты от рассинхронизации
 	currentTime := time.Now()
 	fixedNow := func() time.Time { return currentTime }
 
-	// RU: ИСХОДНОЕ ИСПРАВЛЕНИЕ: используем Линейный Backoff с шагом 10мс, чтобы интервалы
-	// RU: слоев в тесте идеально совпадали с расчетом дедлайнов (10мс, 20мс, 30мс)!
-	// EN: CRITICAL FIX: Use LinearBackoff with a 10ms step to match layer intervals
-	// EN: perfectly with deadline calculations (10ms, 20ms, 30ms) inside this test!
+	// используем Линейный Backoff с шагом 10мс, чтобы интервалы
+	// слоев в тесте идеально совпадали с расчетом дедлайнов (10мс, 20мс, 30мс)!
 	backoffStrategy := &LinearBackoff{Interval: 10 * time.Millisecond}
 
 	lc := NewLayerCache[string, int](configs, backoffStrategy, WithNowFunc[string, int](fixedNow))
 	lc.Set("key1", 100)
 
-	// RU: Шаг 1: Сдвигаем время за дедлайн Слоя 0 (10мс)
-	// EN: Step 1: Advance time past Layer 0 deadline (10ms)
+	// Шаг 1: Сдвигаем время за дедлайн Слоя 0 (10мс)
 	currentTime = currentTime.Add(15 * time.Millisecond)
 
 	key, val, layerIdx, found := lc.PeekExpiredScan()
@@ -100,10 +95,8 @@ func TestLayerCache_PromoteLayer(t *testing.T) {
 		t.Error("packet should be alive when moving from layer 0 to layer 1")
 	}
 
-	// RU: Шаг 2: Элемент на Слое 1. LinearBackoff.Next(1) вернет ровно 20мс!
-	// RU: Чтобы гарантированно просрочить его, сдвигаем время на 25мс вперед.
-	// EN: Step 2: Item is on Layer 1. LinearBackoff.Next(1) returns exactly 20ms.
-	// EN: Advance time by 25ms to trigger expiration.
+	// Шаг 2: Элемент на Слое 1. LinearBackoff.Next(1) вернет ровно 20мс!
+	// Чтобы гарантированно просрочить его, сдвигаем время на 25мс вперед.
 	currentTime = currentTime.Add(25 * time.Millisecond)
 
 	key, val, layerIdx, found = lc.PeekExpiredScan()
@@ -117,10 +110,8 @@ func TestLayerCache_PromoteLayer(t *testing.T) {
 		t.Error("packet should be alive when moving from layer 1 to layer 2")
 	}
 
-	// RU: Шаг 3: Элемент на Слое 2. LinearBackoff.Next(2) вернет ровно 30мс!
-	// RU: Чтобы гарантированно просрочить Слой 2, сдвигаем время на 35мс вперед.
-	// EN: Step 3: Item is on Layer 2. LinearBackoff.Next(2) returns exactly 30ms.
-	// EN: Advance time by 35ms to trigger expiration.
+	// Шаг 3: Элемент на Слое 2. LinearBackoff.Next(2) вернет ровно 30мс!
+	// Чтобы гарантированно просрочить Слой 2, сдвигаем время на 35мс вперед.
 	currentTime = currentTime.Add(35 * time.Millisecond)
 
 	key, val, layerIdx, found = lc.PeekExpiredScan()

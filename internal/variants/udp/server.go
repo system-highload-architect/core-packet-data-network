@@ -36,8 +36,7 @@ type Server struct {
 	bufPool     sync.Pool
 }
 
-// RU: Передаем четкую структуру с указателем на массив из пула и реальной длиной данных
-// EN: Pass a clear structure containing a pointer to the pool array and the actual data length
+// Передаем четкую структуру с указателем на массив из пула и реальной длиной данных
 type jobMessage struct {
 	BufPtr *[]byte
 	Length int
@@ -63,13 +62,11 @@ func NewServer(cfg *Config, log *logger.Logger, out io.Writer) (*Server, error) 
 		out:        out,
 		orderedBuf: order.NewOrderedBuffer[string](1),
 		dedup:      lru.NewCache[uint64, struct{}](30 * time.Second),
-		jobs:       make(chan jobMessage, 100_000), // RU: Буфер под максимальный объем бенчмарка | EN: Sized for maximum benchmark scale
-		outputCh:   make(chan string, 100_000),
+		jobs:       make(chan jobMessage, 100_000),
 		stopCh:     make(chan struct{}),
 		bufPool: sync.Pool{
 			New: func() any {
-				// RU: Выделяем буфер под MTU с запасом
-				// EN: Pre-allocate maximum MTU footprint boundary buffer
+				// Выделяем буфер под MTU с запасом
 				b := make([]byte, cfg.MaxPacketSize+256)
 				return &b
 			},
@@ -88,13 +85,11 @@ func NewServer(cfg *Config, log *logger.Logger, out io.Writer) (*Server, error) 
 
 func (s *Server) worker() {
 	for msg := range s.jobs {
-		// RU: Берем срез данных строго по записанной длине
-		// EN: Reslice slice explicitly using metrics tracking properties
+		// Берем срез данных строго по записанной длине
 		data := (*msg.BufPtr)[:msg.Length]
 		s.processMessage(data, msg.Addr)
 
-		// RU: Безопасно возвращаем точный указатель обратно в пул
-		// EN: Securely return the exact pointer reference back into the pool
+		// Безопасно возвращаем точный указатель обратно в пул
 		s.bufPool.Put(msg.BufPtr)
 	}
 }
@@ -112,8 +107,7 @@ func (s *Server) Run() error {
 		case <-s.stopCh:
 			return nil
 		default:
-			// RU: Забираем указатель на базовый массив из пула
-			// EN: Lease basic array pointer wrapper directly out of pool storage
+			// Забираем указатель на базовый массив из пула
 			bufPtr := s.bufPool.Get().(*[]byte)
 			buf := *bufPtr
 
@@ -127,13 +121,11 @@ func (s *Server) Run() error {
 				continue
 			}
 
-			// RU: Отправляем в канал точные метаданные
-			// EN: Pass precise pipeline metrics directly into channels execution bounds
+			// Отправляем в канал точные метаданные
 			select {
 			case s.jobs <- jobMessage{BufPtr: bufPtr, Length: n, Addr: addr}:
 			default:
-				// RU: Если воркеры не успевают — сбрасываем буфер назад
-				// EN: Saturated worker safety protection line
+				// Если воркеры не успевают — сбрасываем буфер назад
 				s.bufPool.Put(bufPtr)
 			}
 		}

@@ -13,8 +13,7 @@ import (
 )
 
 func main() {
-	// RU: Парсим флаги командной строки
-	// EN: Parse command-line flags
+	// Парсим флаги командной строки
 	addr := flag.String("addr", "127.0.0.1:6000", "UDP server listen address")
 	flag.Parse()
 
@@ -23,7 +22,7 @@ func main() {
 
 	cfg := udp.DefaultConfig()
 	cfg.ServerAddr = *addr
-	cfg.BenchMode = false // RU: В консольном режиме честно выводим данные | EN: In console mode, stream data properly
+	cfg.BenchMode = false // В консольном режиме честно выводим данные
 
 	server, err := udp.NewServer(cfg, log, os.Stdout)
 	if err != nil {
@@ -31,8 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// RU: Канал для перехвата системных сигналов прерывания (Graceful Shutdown)
-	// EN: Channel to intercept OS interruption signals (Graceful Shutdown)
+	// Канал для перехвата системных сигналов прерывания (Graceful Shutdown)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 

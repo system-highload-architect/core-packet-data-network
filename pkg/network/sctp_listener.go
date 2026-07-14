@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net"
 
@@ -43,7 +44,8 @@ func (ln *SCTPListener) Accept() (*SCTPConn, error) {
 }
 
 // Close закрывает слушатель (без контекста).
-func (ln *SCTPListener) Close() error {
+func (ln *SCTPListener) Close(ctx context.Context) error {
+	_ = ctx
 	return ln.listener.Close()
 }
 

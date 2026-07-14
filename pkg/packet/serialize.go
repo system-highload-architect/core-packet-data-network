@@ -47,8 +47,7 @@ func (p *Packet) SerializeTo(buf []byte) ([]byte, error) {
 		offset += dataLen
 	}
 
-	// RU: Считаем хэш, если он не был предрассчитан
-	// EN: Compute hash if it hasn't been pre-assigned
+	// Считаем хэш, если он не был предрассчитан
 	zeroChecksum := [32]byte{}
 	if p.Checksum == zeroChecksum {
 		p.Checksum = sha256.Sum256(p.Data)
@@ -87,8 +86,7 @@ func (p *Packet) Deserialize(data []byte) error {
 		return errors.New("packet: data length exceeds packet length")
 	}
 
-	// RU: Вместо p.Data = make([]byte) просто берем срез (ссылку на исходный буфер)
-	// EN: Instead of p.Data = make([]byte) just slice the original buffer to achieve zero-copy
+	// Вместо p.Data = make([]byte) просто берем срез (ссылку на исходный буфер)
 	if int(dataLen) > 0 {
 		p.Data = data[offset : offset+int(dataLen)]
 	} else {
@@ -100,8 +98,7 @@ func (p *Packet) Deserialize(data []byte) error {
 		return errors.New("packet: missing checksum")
 	}
 
-	// RU: Копируем фиксированные 32 байта прямо в массив структуры
-	// EN: Copy fixed 32 bytes directly into the structure's array
+	// Копируем фиксированные 32 байта прямо в массив структуры
 	copy(p.Checksum[:], data[offset:offset+32])
 	offset += 32
 
@@ -115,16 +112,14 @@ func (p *Packet) Deserialize(data []byte) error {
 		return errors.New("packet: extra data length exceeds packet length")
 	}
 
-	// RU: Zero-Copy для поля Extra
-	// EN: Zero-Copy mapping for Extra payload field
+	// Zero-Copy для поля Extra
 	if extraLen > 0 {
 		p.Extra = data[offset : offset+int(extraLen)]
 	} else {
 		p.Extra = nil
 	}
 
-	// RU: Финальная проверка целостности пакета
-	// EN: Final message integrity enforcement
+	// Финальная проверка целостности пакета
 	if !p.VerifyChecksum() {
 		return errors.New("packet: checksum mismatch")
 	}
@@ -135,5 +130,5 @@ func (p *Packet) Deserialize(data []byte) error {
 // VerifyChecksum проверяет контрольную сумму без аллокаций
 func (p *Packet) VerifyChecksum() bool {
 	hash := sha256.Sum256(p.Data)
-	return hash == p.Checksum // RU: Сравнение массивов [32]byte в Go выполняется за 1 такт без аллокаций | EN: Arrays [32]byte comparison executes natively without allocations
+	return hash == p.Checksum
 }

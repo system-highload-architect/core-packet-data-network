@@ -16,8 +16,7 @@ type Sender interface {
 
 type Receiver interface {
 	Receive(ctx context.Context) (*Message, error)
-	// RU: Добавляем метод для чтения в готовый буфер (Zero Allocations)
-	// EN: Add a method for reading into a pre-allocated buffer (Zero Allocations)
+	// Метод для чтения в готовый буфер (Zero Allocations)
 	ReceiveTo(buf []byte) (int, net.Addr, error)
 }
 
@@ -27,8 +26,6 @@ type Closer interface {
 
 type Transport interface {
 	Sender
-	// RU: Встраиваем обновленный Receiver
-	// EN: Embed the updated Receiver interface
 	Receiver
 	Closer
 	Addr() net.Addr

@@ -12,7 +12,7 @@ type Config struct {
 	RetryTimeout  time.Duration
 	BenchMode     bool
 	PregenPackets [][]byte
-	Workers       int // RU: Добавляем поле для контроля потоков | EN: Add field for concurrency control
+	Workers       int
 }
 
 func DefaultConfig() *Config {
@@ -24,6 +24,6 @@ func DefaultConfig() *Config {
 		DataShards:    4,
 		MaxRetries:    3,
 		RetryTimeout:  100 * time.Millisecond,
-		Workers:       10, // RU: Строго 10 потоков по умолчанию по ТЗ | EN: Exactly 10 threads by default per task requirements
+		Workers:       10,
 	}
 }

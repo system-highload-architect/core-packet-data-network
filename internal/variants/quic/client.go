@@ -24,7 +24,7 @@ type Client struct {
 	log           *logger.Logger
 	out           io.Writer
 	orderedOutput *order.OrderedBuffer[string]
-	outputCh      chan string // RU: Канал для неблокирующего вывода | EN: Non-blocking output pipeline channel
+	outputCh      chan string
 
 	sentCount atomic.Uint64
 	ackCount  atomic.Uint64
@@ -67,7 +67,7 @@ func (c *Client) Run() error {
 	c.log.Info("QUIC client starting connection down to", "server", c.config.ServerAddr)
 
 	go c.ackReceiver()
-	go c.outputPipeline() // RU: Запуск фонового печатника экрана | EN: Start background print worker
+	go c.outputPipeline()
 
 	workers := c.config.Workers
 	if workers <= 0 {
@@ -80,8 +80,7 @@ func (c *Client) Run() error {
 
 	c.workerWg.Wait()
 
-	// RU: Увеличиваем дедлайн ожидания в консоли, чтобы дать медленному терминалу пропечатать строки
-	// EN: Extend deadline bounds in console mode providing slow terminal gaps to flush strings
+	// Увеличиваем дедлайн ожидания в консоли, чтобы дать медленному терминалу пропечатать строки
 	deadline := time.After(20 * time.Second)
 	for c.ackCount.Load() < c.config.TotalPackets {
 		select {
@@ -203,8 +202,7 @@ func (c *Client) ackReceiver() {
 			} else {
 				result = fmt.Sprintf("ID=%d FAIL (QUIC)", id)
 			}
-			// RU: Вместо прямой печати шлем строки в неблокирующий канал
-			// EN: Instead of inline printing route strings into non-blocking channel
+			// Вместо прямой печати шлем строки в неблокирующий канал
 			for _, r := range c.orderedOutput.Insert(id, result) {
 				select {
 				case c.outputCh <- r:
@@ -225,5 +223,5 @@ func (c *Client) Shutdown() {
 	close(c.stopCh)
 	close(c.outputCh)
 	c.workerWg.Wait()
-	_ = c.conn.Close()
+	_ = c.conn.Close(context.Background())
 }

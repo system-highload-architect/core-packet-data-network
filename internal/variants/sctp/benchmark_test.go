@@ -53,13 +53,11 @@ func BenchmarkSCTPThroughput(b *testing.B) {
 		}
 		go server.Run()
 
-		// RU: Даем ядру базовый зазор на запуск слушателя
-		// EN: Give kernel standard gap to spin up the listener thread
+		// Даем ядру базовый зазор на запуск слушателя
 		time.Sleep(20 * time.Millisecond)
 		cliCfg.ServerAddr = server.listener.Addr().String()
 
-		// RU: Внедряем паттерн Retry Loop для надежного подключения клиента
-		// EN: Inject Retry Loop pattern to guarantee robust client connection context
+		// Внедряем паттерн Retry Loop для надежного подключения клиента
 		var client *Client
 		var clientErr error
 		maxAttempts := 5
@@ -70,15 +68,13 @@ func BenchmarkSCTPThroughput(b *testing.B) {
 				break // Успешно подключились!
 			}
 
-			// RU: Если это последняя попытка и всё равно ошибка — падаем
-			// EN: If this is the final attempt and still failing — abort
+			// Если это последняя попытка и всё равно ошибка — падаем
 			if attempt == maxAttempts {
 				server.Shutdown()
 				b.Fatalf("sctp client benchmark init failure after %d retries: %v", maxAttempts, clientErr)
 			}
 
-			// RU: Делаем экспоненциальную паузу перед следующей попыткой
-			// EN: Apply exponential backoff delay before next retry sequence
+			// Делаем экспоненциальную паузу перед следующей попыткой
 			time.Sleep(time.Duration(attempt*20) * time.Millisecond)
 		}
 

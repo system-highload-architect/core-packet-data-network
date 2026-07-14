@@ -131,8 +131,7 @@ func (s *Server) Run() error {
 func (s *Server) processShard(sm shardMsg) {
 	s.recvCount.Add(1)
 
-	// RU: В BenchMode просто шлем быстрый ACK без лишней логики
-	// EN: In BenchMode just fire a quick ACK omitting formatting logic
+	// В BenchMode просто шлем быстрый ACK без лишней логики
 	if s.config.BenchMode {
 		if sm.shardID == 0 {
 			var ackBuf [9]byte
@@ -143,24 +142,20 @@ func (s *Server) processShard(sm shardMsg) {
 		return
 	}
 
-	// RU: РЕЖИМ КОНСОЛИ (BenchMode = false): Выводим данные строго по ТЗ задачи!
-	// EN: CONSOLE MODE (BenchMode = false): Output metrics strictly per specification!
+	// (BenchMode = false): Выводим данные строго по ТЗ задачи!
 	if sm.shardID == 0 {
-		// RU: Симулируем успешную проверку целостности для демонстрации
-		// EN: Simulate successful integrity verification for layout demonstration
+		// Симулируем успешную проверку целостности для демонстрации
 		recvTime := time.Now()
 
 		resultStr := fmt.Sprintf("ID=%d [FEC] Formed=%v Received=%v Checksum=OK",
 			sm.packetID, recvTime.Add(-5*time.Millisecond).Format(time.RFC3339Nano), recvTime.Format(time.RFC3339Nano))
 
-		// RU: Выводим упорядоченную строку в консоль сервера строго по ТЗ
-		// EN: Flush sorted metric string into server console per requirements
+		// Выводим упорядоченную строку в консоль сервера строго по ТЗ
 		for _, r := range s.orderedBuf.Insert(sm.packetID, resultStr) {
 			fmt.Fprintln(s.out, r)
 		}
 
-		// RU: Отправляем клиенту обязательный ACK-пакет, чтобы разблокировать его LayerCache!
-		// EN: Stream the mandatory ACK packet back to client to unlock its LayerCache matrix!
+		// Отправляем клиенту обязательный ACK-пакет, чтобы разблокировать его LayerCache!
 		var ackBuf [9]byte
 		binary.BigEndian.PutUint64(ackBuf[0:8], sm.packetID)
 		ackBuf[8] = 1 // Успех

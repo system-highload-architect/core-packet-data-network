@@ -28,8 +28,7 @@ type Client struct {
 	out           io.Writer
 	orderedOutput *order.OrderedBuffer[string]
 
-	// RU: Наш многослойный кэш дедлайнов вместо сырой мапы
-	// EN: Hierarchical deadline cache tier replacing legacy map structures
+	// Наш многослойный кэш дедлайнов вместо сырой мапы
 	layerCache *lru.LayerCache[uint64, *pendingPacket]
 	pendingMu  sync.Mutex
 
@@ -64,8 +63,7 @@ func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) 
 		return nil, fmt.Errorf("resolve server addr: %w", err)
 	}
 
-	// RU: Конфигурируем 3 слоя экспоненциального Backoff ожидания
-	// EN: Provisions 3 layers of sequential exponential backoff windows
+	// Конфигурируем 3 слоя экспоненциального Backoff ожидания
 	layerConfigs := []lru.LayerConfig{
 		{TTL: cfg.RetryTimeout},     // Слой 0: 100мс (Быстрый)
 		{TTL: cfg.RetryTimeout * 2}, // Слой 1: 200мс (Средний)
@@ -99,7 +97,7 @@ func (c *Client) Run() error {
 	}
 
 	if !c.config.BenchMode {
-		go c.retransmitterDaemon() // RU: Запуск умного демона | EN: Ignite smart background daemon
+		go c.retransmitterDaemon()
 	}
 
 	c.workerWg.Wait()
@@ -116,14 +114,12 @@ func (c *Client) Run() error {
 			}
 		}
 	} else {
-		// RU: Даем слоям кэша честно выгрести все хвосты перед выходом
-		// EN: Provide a solid gap for the layers to flush out remaining items
+		// Даем слоям кэша честно выгрести все хвосты перед выходом
 		deadline := time.After(15 * time.Second)
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 		for {
-			// RU: Исправлено: вызываем инкапсулированный метод Len() вместо прямого доступа к полю
-			// EN: Fixed: call encapsulated Len() method instead of directly accessing private fields
+			// Исправлено: вызываем инкапсулированный метод Len() вместо прямого доступа к полю
 			if c.layerCache.Len() == 0 {
 				break
 			}
@@ -204,8 +200,7 @@ func (c *Client) generator(idx, step int) {
 			pendingData := make([]byte, len(pkt.Data))
 			copy(pendingData, pkt.Data)
 
-			// RU: Создаем указатель на структуру и сразу передаем в кэш — переменная использована!
-			// EN: Instantiate structure pointer and seed directly into cache — variable is used!
+			// Создаем указатель на структуру и сразу передаем в кэш — переменная использована!
 			c.layerCache.Set(id, &pendingPacket{
 				data:     pendingData,
 				checksum: pkt.Checksum[:],
@@ -215,8 +210,7 @@ func (c *Client) generator(idx, step int) {
 }
 
 func (c *Client) ackReceiver() {
-	// RU: Фиксированный массив на стеке для приема ACK-пакетов
-	// EN: Fixed stack array allocation for incoming ACK structures
+	// Фиксированный массив на стеке для приема ACK-пакетов
 	var ackBuf [32]byte
 	for {
 		n, _, err := c.conn.ReceiveTo(ackBuf[:])
@@ -232,8 +226,7 @@ func (c *Client) ackReceiver() {
 		c.ackCount.Add(1)
 
 		if !c.config.BenchMode {
-			// RU: Прилетел ACK — полностью стираем пакет из всех слоев! Доставлено!
-			// EN: ACK received — instantly wipe item references from all storage layers!
+			// Прилетел ACK — полностью стираем пакет из всех слоев! Доставлено!
 			c.layerCache.Delete(id)
 
 			var result string
@@ -259,18 +252,15 @@ func (c *Client) retransmitterDaemon() {
 
 		var alive bool
 
-		// RU: Шаг 1: Ищем УЖЕ просроченные по TTL элементы среди слоев
-		// EN: Step 1: Scan for elements that have ALREADY breached their layer TTL bounds
+		// Шаг 1: Ищем УЖЕ просроченные по TTL элементы среди слоев
 		id, pp, layerIdx, foundExpired := c.layerCache.PeekExpiredScan()
 
 		if foundExpired {
-			// RU: Продвигаем элемент на следующий слой Backoff
-			// EN: Attempt moving expired element up into the next backoff stage
+			// Продвигаем элемент на следующий слой Backoff
 			pp, alive = c.layerCache.PromoteLayer(id, layerIdx)
 
 			if !alive {
-				// RU: Все попытки исчерпаны — это честный LOST
-				// EN: All retries across all tiers exhausted — mark LOST
+				// Все попытки исчерпаны — это честный LOST
 				c.lostCount.Add(1)
 				result := fmt.Sprintf("ID=%d LOST", id)
 				for _, r := range c.orderedOutput.Insert(id, result) {
@@ -279,12 +269,11 @@ func (c *Client) retransmitterDaemon() {
 				continue
 			}
 
-			// RU: Пакет жив! Перевыпускаем в сеть с обновленным штампом времени
-			// EN: Item promoted! Re-serialize payload snapshot and fire onto network pipe
+			// Пакет жив! Перевыпускаем в сеть с обновленным штампом времени
 			pkt := packet.Packet{
 				ID:        id,
 				Timestamp: time.Now(),
-				Data:      pp.data, // RU: Теперь переменная pp используется корректно!
+				Data:      pp.data,
 			}
 			copy(pkt.Checksum[:], pp.checksum)
 
@@ -295,8 +284,7 @@ func (c *Client) retransmitterDaemon() {
 			continue // Выгребаем просроченную очередь без засыпания
 		}
 
-		// RU: Шаг 2: Просроченных нет. Вычисляем точное время сна до ближайшего дедлайна
-		// EN: Step 2: No expired tasks found. Map next sleep interval down to microsecond deadlines
+		// Шаг 2: Просроченных нет. Вычисляем точное время сна до ближайшего дедлайна
 		earliestDeadline, hasActiveDeadlines := c.layerCache.GetEarliestDeadline()
 
 		if !hasActiveDeadlines {
@@ -307,7 +295,7 @@ func (c *Client) retransmitterDaemon() {
 		now := time.Now()
 		if earliestDeadline.After(now) {
 			sleepDuration := earliestDeadline.Sub(now)
-			time.Sleep(sleepDuration) // Спим в точности до миллисекунды смерти ближайшего пакета
+			time.Sleep(sleepDuration) // Спим в точности до миллисекунды истечения срока ближайшего пакета
 		}
 	}
 }

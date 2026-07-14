@@ -10,7 +10,7 @@ import (
 )
 
 type QUICConn struct {
-	conn *quic.Conn // RU: Используем quic.Conn в соответствии с вашей версией библиотеки | EN: Use quic.Conn according to your library version
+	conn *quic.Conn
 	addr net.Addr
 }
 
@@ -52,7 +52,7 @@ func (q *QUICConn) Receive(ctx context.Context) (*Message, error) {
 	return &Message{Addr: q.conn.RemoteAddr(), Data: msg}, nil
 }
 
-// ReceiveTo реализует ВЫСОКОПРОИЗВОДИТЕЛЬНОЕ чтение датаграмм без аллокаций
+// ReceiveTo высокопроизводительное чтение датаграмм без аллокаций
 func (q *QUICConn) ReceiveTo(buf []byte) (int, net.Addr, error) {
 	// quic-go принимает датаграмму во внутренний буфер
 	msg, err := q.conn.ReceiveDatagram(context.Background())
@@ -75,7 +75,8 @@ func (q *QUICConn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 }
 
 // Close закрывает QUIC-соединение (соответствует интерфейсу Closer)
-func (q *QUICConn) Close() error {
+func (q *QUICConn) Close(ctx context.Context) error {
+	_ = ctx
 	return q.conn.CloseWithError(0, "closed")
 }
 

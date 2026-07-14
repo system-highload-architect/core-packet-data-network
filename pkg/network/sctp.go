@@ -59,8 +59,7 @@ func (s *SCTPConn) Receive(ctx context.Context) (*Message, error) {
 	}, nil
 }
 
-// ReceiveTo реализует ВЫСОКОПРОИЗВОДИТЕЛЬНОЕ чтение в готовый буфер без аллокаций.
-// ReceiveTo implements high-performance zero-allocation read into a pre-allocated buffer.
+// ReceiveTo высокопроизводительное чтение в готовый буфер без аллокаций.
 func (s *SCTPConn) ReceiveTo(buf []byte) (int, net.Addr, error) {
 	n, err := s.conn.Read(buf)
 	if err != nil {
@@ -71,6 +70,7 @@ func (s *SCTPConn) ReceiveTo(buf []byte) (int, net.Addr, error) {
 
 // Close закрывает соединение (приведено к единой сигнатуре Closer без контекста).
 // Close terminates sctp connection session (aligned with standard context-free Closer).
-func (s *SCTPConn) Close() error {
+func (s *SCTPConn) Close(ctx context.Context) error {
+	_ = ctx
 	return s.conn.Close()
 }

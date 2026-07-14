@@ -16,8 +16,7 @@ func BenchmarkUDPFECThroughput(b *testing.B) {
 	out := io.Discard
 
 	maxSize := 64
-	// RU: Гарантируем пул предгенерации с запасом под итерации b.N
-	// EN: Ensure pregen pool capacity handles standard b.N scaling loops
+	// Гарантируем пул предгенерации с запасом под итерации b.N
 	const maxPregenRequired = 2_000_000
 	if len(pregen.Packets) < maxPregenRequired {
 		pregen.Init(maxPregenRequired, maxSize)
@@ -25,8 +24,7 @@ func BenchmarkUDPFECThroughput(b *testing.B) {
 
 	b.ResetTimer()
 
-	// RU: Настоящий цикл бенчмарка Go, управляемый b.N
-	// EN: True Go benchmark loop driven natively by b.N
+	// Настоящий цикл бенчмарка Go, управляемый b.N
 	for i := 0; i < b.N; i++ {
 		total := 100_000
 		if b.N > total {
@@ -53,13 +51,11 @@ func BenchmarkUDPFECThroughput(b *testing.B) {
 		}
 		go server.Run()
 
-		// RU: Даем сокету сервера минимальный зазор для привязки к порту
-		// EN: Provide a minimal gap for the server socket to bind
+		// Даем сокету сервера минимальный зазор для привязки к порту
 		time.Sleep(5 * time.Millisecond)
 		cliCfg.ServerAddr = server.conn.Addr().String()
 
-		// RU: Исправлено: передаем out третьим аргументом в соответствии с обновленным конструктором
-		// EN: Fixed: pass out as the third argument matching the updated constructor signature
+		// Исправлено: передаем out третьим аргументом в соответствии с обновленным конструктором
 		client, err := NewClient(cliCfg, log, out)
 		if err != nil {
 			server.Shutdown(context.Background())
@@ -80,14 +76,12 @@ func BenchmarkUDPFECThroughput(b *testing.B) {
 		sent := client.sentCount.Load()
 		acked := client.ackCount.Load()
 
-		// RU: Фиксируем метрики текущей итерации
-		// EN: Report metrics for the current benchmark iteration
+		// Фиксируем метрики текущей итерации
 		b.ReportMetric(rps, "rps")
 		b.ReportMetric(float64(sent), "sent_batches")
 		b.ReportMetric(float64(acked), "acked_batches")
 
-		// RU: Мгновенная очистка портов сокетов перед следующим шагом b.N
-		// EN: Immediate socket port cleanup before the next b.N iteration step
+		// Мгновенная очистка портов сокетов перед следующим шагом b.N
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		client.Shutdown(ctx)
 		server.Shutdown(ctx)

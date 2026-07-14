@@ -30,8 +30,7 @@ func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*QUICListener, er
 	if err != nil {
 		return nil, err
 	}
-	// RU: Сохраняем фактический адрес, который дал слушатель (с портом)
-	// EN: Store actual local address initialized by listener mapping
+	// Сохраняем фактический адрес, который дал слушатель (с портом)
 	return &QUICListener{
 		listener: listener,
 		addr:     listener.Addr(),
@@ -39,7 +38,6 @@ func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*QUICListener, er
 }
 
 // Accept ожидает и возвращает новое QUIC соединение
-// Accept blocks and returns wrapped client connection pipeline context
 func (l *QUICListener) Accept(ctx context.Context) (*QUICConn, error) {
 	conn, err := l.listener.Accept(ctx)
 	if err != nil {
@@ -52,8 +50,8 @@ func (l *QUICListener) Accept(ctx context.Context) (*QUICConn, error) {
 }
 
 // Close закрывает слушатель (приведено к единому интерфейсу Closer без контекста)
-// Close terminates the listener runtime (aligned with standard context-free Closer)
-func (l *QUICListener) Close() error {
+func (l *QUICListener) Close(ctx context.Context) error {
+	_ = ctx
 	return l.listener.Close()
 }
 

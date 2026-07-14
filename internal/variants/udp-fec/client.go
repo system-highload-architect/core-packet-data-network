@@ -49,8 +49,7 @@ type Client struct {
 	out           io.Writer
 	orderedOutput *order.OrderedBuffer[string]
 
-	// RU: Подключаем многослойный кэш вместо сырой мапы
-	// EN: Embed hierarchical LayerCache instead of unoptimized map
+	// Подключаем многослойный кэш вместо сырой мапы
 	layerCache *lru.LayerCache[uint64, *pendingFEC]
 	pendingMu  sync.Mutex
 
@@ -85,8 +84,7 @@ func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) 
 		return nil, err
 	}
 
-	// RU: Настраиваем 3 экспоненциальных слоя ожидания для шардов
-	// EN: Provisions 3 layers of sequential exponential backoff windows
+	// Настраиваем 3 экспоненциальных слоя ожидания для шардов
 	layerConfigs := []lru.LayerConfig{
 		{TTL: cfg.RetryTimeout},     // Слой 0: 100мс
 		{TTL: cfg.RetryTimeout * 2}, // Слой 1: 200мс
@@ -129,7 +127,7 @@ func (c *Client) Run() error {
 	}
 
 	if !c.config.BenchMode {
-		go c.retransmitterDaemon() // RU: Запуск бесшумного backoff-демона
+		go c.retransmitterDaemon()
 	}
 
 	c.workerWg.Wait()
@@ -137,8 +135,7 @@ func (c *Client) Run() error {
 	if c.config.BenchMode {
 		time.Sleep(50 * time.Millisecond)
 	} else {
-		// RU: Даем слоям кэша полностью очиститься
-		// EN: Ensure retransmit layers flush clean before stop sequence
+		// Даем слоям кэша полностью очиститься
 		deadline := time.After(15 * time.Second)
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
@@ -197,8 +194,7 @@ func (c *Client) generator(idx, step int) {
 		dataLen := len(payload)
 		shardSize := (dataLen + c.config.DataShards - 1) / c.config.DataShards
 
-		// RU: Безопасное выделение матрицы под шарды
-		// EN: Safe dynamic shard matrix grouping
+		// Безопасное выделение матрицы под шарды
 		shards := make([][]byte, c.config.DataShards+1)
 		for i := 0; i < c.config.DataShards+1; i++ {
 			shards[i] = make([]byte, shardSize, maxShardSize)
@@ -276,13 +272,11 @@ func (c *Client) retransmitterDaemon() {
 
 		var alive bool
 
-		// RU: Шаг 1: Ищем УЖЕ просроченные по TTL элементы среди слоев
-		// EN: Step 1: Scan for elements that have ALREADY breached their layer TTL bounds
+		// Шаг 1: Ищем УЖЕ просроченные по TTL элементы среди слоев
 		id, pp, layerIdx, foundExpired := c.layerCache.PeekExpiredScan()
 
 		if foundExpired {
-			// RU: Продвигаем элемент на следующий слой Backoff
-			// EN: Attempt moving expired element up into the next backoff stage
+			// Продвигаем элемент на следующий слой Backoff
 			pp, alive = c.layerCache.PromoteLayer(id, layerIdx)
 
 			if !alive {
@@ -294,8 +288,7 @@ func (c *Client) retransmitterDaemon() {
 				continue
 			}
 
-			// RU: Пакет жив! Повторно отправляем все его сохраненные FEC-шарды
-			// EN: Shards package is alive! Re-stream all its stored fragments
+			// Пакет жив! Повторно отправляем все его сохраненные FEC-шарды
 			bufPtr := c.bufPool.Get().(*[]byte)
 			buf := *bufPtr
 
@@ -308,8 +301,7 @@ func (c *Client) retransmitterDaemon() {
 			continue
 		}
 
-		// RU: Шаг 2: Просроченных нет. Засыпаем ровно до ближайшего дедлайна.
-		// EN: Step 2: No active expirations. Sleep down to microsecond deadlines.
+		// Шаг 2: Просроченных нет. Засыпаем ровно до ближайшего дедлайна.
 		earliestDeadline, hasActiveDeadlines := c.layerCache.GetEarliestDeadline()
 
 		if !hasActiveDeadlines {

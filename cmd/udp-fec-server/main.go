@@ -13,8 +13,7 @@ import (
 )
 
 func main() {
-	// RU: Парсим адрес из консоли
-	// EN: Parse listening address from console
+	// Парсим адрес из консоли
 	addr := flag.String("addr", "127.0.0.1:7000", "UDP+FEC server listen address")
 	shards := flag.Int("shards", 4, "number of data shards for FEC")
 	flag.Parse()
@@ -25,7 +24,7 @@ func main() {
 	cfg := udpfec.DefaultConfig()
 	cfg.ServerAddr = *addr
 	cfg.DataShards = *shards
-	cfg.BenchMode = false // RU: Включаем полноценный вывод и обработку | EN: Enable full output processing
+	cfg.BenchMode = false // Включаем полноценный вывод и обработку
 
 	server, err := udpfec.NewServer(cfg, log, os.Stdout)
 	if err != nil {

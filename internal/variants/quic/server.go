@@ -116,8 +116,7 @@ func (s *Server) Run() error {
 		case <-s.stopCh:
 			return nil
 		default:
-			// RU: Принимаем стрим последовательно, без спавна тысяч горутин
-			// EN: Accept streams sequentially, preventing thousand-goroutine spikes
+			// Принимаем стрим последовательно, без спавна тысяч горутин
 			stream, err := conn.AcceptStream(ctx)
 			if err != nil {
 				return nil
@@ -126,8 +125,7 @@ func (s *Server) Run() error {
 			bufPtr := s.bufPool.Get().(*[]byte)
 			buf := *bufPtr
 
-			// RU: Вычитываем стрим прямо здесь. Потоки QUIC работают быстро, сисколл не заблокирует сокет
-			// EN: Read stream in-place. QUIC streams are fast, syscall won't stall the socket
+			// Вычитываем стрим прямо здесь. Потоки QUIC работают быстро, сисколл не заблокирует сокет
 			offset := 0
 			for {
 				n, err := stream.Read(buf[offset:])
@@ -200,5 +198,5 @@ func (s *Server) Shutdown() {
 	close(s.stopCh)
 	close(s.jobs)
 	close(s.outputCh)
-	_ = s.listener.Close()
+	_ = s.listener.Close(context.Background())
 }

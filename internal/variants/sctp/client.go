@@ -145,29 +145,24 @@ func (c *Client) generator(idx, step int) {
 	}
 }
 func (c *Client) ackReceiver() {
-	// RU: Жесткий фиксированный массив на стеке горутины. Ноль аллокаций в куче!
-	// EN: Fixed-size array strictly allocated on the goroutine stack. Zero heap allocations!
+	// Жесткий фиксированный массив на стеке горутины. Ноль аллокаций в куче!
 	var ackBuf [16]byte
 
 	for {
-		// RU: Передаем срез фиксированного стекового массива. Данные пишутся in-place.
-		// EN: Pass a slice of the fixed stack array. Data is written in-place.
+		// Передаем срез фиксированного стекового массива. Данные пишутся in-place.
 		n, _, err := c.conn.ReceiveTo(ackBuf[:])
 		if err != nil {
 			return
 		}
-		// RU: Защита: ACK-пакет должен содержать как минимум 8 байт ID + 1 байт статус
-		// EN: Guard: ACK packet must contain at least 8 bytes ID + 1 byte status
+		// Защита: ACK-пакет должен содержать как минимум 8 байт ID + 1 байт статус
 		if n < 9 {
 			continue
 		}
 
-		// RU: Декодируем ID пакета из первых 8 байт
-		// EN: Decode packet ID from the first 8 bytes
+		// Декодируем ID пакета из первых 8 байт
 		id := binary.BigEndian.Uint64(ackBuf[0:8])
 
-		// RU: Исправлено: читаем статус успеха строго из 8-го байта пришедших данных
-		// EN: Fixed: evaluate success status strictly from the 8th byte of incoming data
+		// Исправлено: читаем статус успеха строго из 8-го байта пришедших данных
 		success := ackBuf[8] == 1
 
 		c.ackCount.Add(1)
@@ -180,8 +175,7 @@ func (c *Client) ackReceiver() {
 				result = fmt.Sprintf("ID=%d FAIL (SCTP)", id)
 			}
 
-			// RU: Потоковый вывод строго по порядку номеров через кольцевой буфер
-			// EN: Streaming output strictly sorted by IDs via ring buffer framework
+			// Потоковый вывод строго по порядку номеров через кольцевой буфер
 			for _, r := range c.orderedOutput.Insert(id, result) {
 				fmt.Fprintln(c.out, r)
 			}
@@ -192,5 +186,5 @@ func (c *Client) ackReceiver() {
 func (c *Client) Shutdown() {
 	close(c.stopCh)
 	c.workerWg.Wait()
-	_ = c.conn.Close()
+	_ = c.conn.Close(context.Background())
 }
