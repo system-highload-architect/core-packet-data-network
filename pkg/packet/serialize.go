@@ -141,3 +141,57 @@ func equal(a, b []byte) bool {
 	}
 	return true
 }
+
+// SerializeTo пытается сериализовать пакет в предоставленный буфер buf.
+// Если cap(buf) достаточно, возвращает buf[:totalLen].
+// Иначе аллоцирует новый буфер и возвращает его.
+func (p *Packet) SerializeTo(buf []byte) ([]byte, error) {
+	dataLen := len(p.Data)
+	extraLen := len(p.Extra)
+	if dataLen > 0xFFFFFFFF {
+		return nil, errors.New("packet: data too large")
+	}
+	if extraLen > 0xFFFF {
+		return nil, errors.New("packet: extra data too large")
+	}
+	totalLen := 8 + 8 + 4 + dataLen + 32 + 2 + extraLen
+
+	var data []byte
+	if cap(buf) >= totalLen {
+		data = buf[:totalLen]
+	} else {
+		data = make([]byte, totalLen)
+	}
+
+	offset := 0
+	binary.BigEndian.PutUint64(data[offset:offset+8], p.ID)
+	offset += 8
+
+	unixNano := p.Timestamp.UnixNano()
+	binary.BigEndian.PutUint64(data[offset:offset+8], uint64(unixNano))
+	offset += 8
+
+	binary.BigEndian.PutUint32(data[offset:offset+4], uint32(dataLen))
+	offset += 4
+
+	if dataLen > 0 {
+		copy(data[offset:offset+dataLen], p.Data)
+		offset += dataLen
+	}
+
+	if len(p.Checksum) != 32 {
+		hash := sha256.Sum256(p.Data)
+		p.Checksum = hash[:]
+	}
+	copy(data[offset:offset+32], p.Checksum)
+	offset += 32
+
+	binary.BigEndian.PutUint16(data[offset:offset+2], uint16(extraLen))
+	offset += 2
+
+	if extraLen > 0 {
+		copy(data[offset:offset+extraLen], p.Extra)
+	}
+
+	return data, nil
+}

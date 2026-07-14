@@ -102,6 +102,11 @@ func (s *Shutdowner) RegisterFunc(name string, fn func(ctx context.Context) erro
 
 // Shutdown закрывает все компоненты в порядке приоритета (от меньшего числа к большему).
 func (s *Shutdowner) Shutdown(ctx context.Context) error {
+	// TODO: заглушка
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	s.mu.RLock()
 	closers := make([]struct {
 		priority Priority

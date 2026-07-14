@@ -16,21 +16,20 @@ import (
 	"core-packet-data-network/pkg/shutdown"
 )
 
-// ServerConfig настройки сервера.
 type ServerConfig struct {
 	ListenAddr  string
 	TLSCert     string
 	TLSKey      string
+	TLSConfig   *tls.Config // приоритетнее загрузки из файлов
 	WorkerCount int
 }
 
-// Server обрабатывает входящие QUIC-датаграммы.
 type Server struct {
 	config     *ServerConfig
 	listener   *network.QUICListener
 	log        *logger.Logger
-	orderedBuf *order.OrderedBuffer[string] // упорядоченный вывод
-	dedup      *lru.Cache[uint64, struct{}] // дедупликация
+	orderedBuf *order.OrderedBuffer[string]
+	dedup      *lru.Cache[uint64, struct{}]
 	shutdowner *shutdown.Shutdowner
 	stopCh     chan struct{}
 
@@ -38,15 +37,19 @@ type Server struct {
 	badChecksum atomic.Uint64
 }
 
-// NewServer создаёт сервер.
 func NewServer(cfg *ServerConfig, log *logger.Logger) (*Server, error) {
-	tlsCert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
-	if err != nil {
-		return nil, fmt.Errorf("load TLS cert: %w", err)
-	}
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"quic-packet"},
+	var tlsConfig *tls.Config
+	if cfg.TLSConfig != nil {
+		tlsConfig = cfg.TLSConfig
+	} else {
+		tlsCert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS cert: %w", err)
+		}
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{tlsCert},
+			NextProtos:   []string{"quic-packet"},
+		}
 	}
 
 	listener, err := network.NewQUICListener(cfg.ListenAddr, tlsConfig)
@@ -71,7 +74,6 @@ func NewServer(cfg *ServerConfig, log *logger.Logger) (*Server, error) {
 	return s, nil
 }
 
-// Run запускает приём соединений и данных.
 func (s *Server) Run() error {
 	s.log.Info("QUIC server listening", "addr", s.listener.Addr())
 	for {
@@ -104,21 +106,19 @@ func (s *Server) handleConnection(conn *network.QUICConn) {
 func (s *Server) processDatagram(data []byte, conn *network.QUICConn) {
 	var pkt packet.Packet
 	if err := pkt.Deserialize(data); err != nil {
-		// повреждённый пакет — не можем отправить ACK, т.к. ID неизвестен
 		return
 	}
 
 	recvTime := time.Now()
 	s.recvCount.Add(1)
 
-	// Проверка дубликата
 	if _, ok := s.dedup.Get(pkt.ID); ok {
 		return
 	}
 	s.dedup.Set(pkt.ID, struct{}{})
 
-	// Формируем строку вывода
-	resultStr := fmt.Sprintf("ID=%d Formed=%v Received=%v Checksum=", pkt.ID, pkt.Timestamp.Format(time.RFC3339Nano), recvTime.Format(time.RFC3339Nano))
+	resultStr := fmt.Sprintf("ID=%d Formed=%v Received=%v Checksum=", pkt.ID,
+		pkt.Timestamp.Format(time.RFC3339Nano), recvTime.Format(time.RFC3339Nano))
 	checksumOK := pkt.VerifyChecksum()
 	if checksumOK {
 		resultStr += "OK"
@@ -127,12 +127,10 @@ func (s *Server) processDatagram(data []byte, conn *network.QUICConn) {
 		s.badChecksum.Add(1)
 	}
 
-	// Упорядоченный вывод
 	for _, r := range s.orderedBuf.Insert(pkt.ID, resultStr) {
 		fmt.Println(r)
 	}
 
-	// Отправляем ACK
 	ackBuf := make([]byte, 9)
 	binary.BigEndian.PutUint64(ackBuf[0:8], pkt.ID)
 	if checksumOK {
@@ -145,7 +143,6 @@ func (s *Server) processDatagram(data []byte, conn *network.QUICConn) {
 	}
 }
 
-// Shutdown мягко завершает сервер.
 func (s *Server) Shutdown(ctx context.Context) error {
 	close(s.stopCh)
 	s.log.Info("server shutting down",

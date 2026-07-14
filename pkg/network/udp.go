@@ -22,11 +22,15 @@ func NewUDPConn(localAddr string) (*UDPConn, error) {
 }
 
 func (u *UDPConn) Send(ctx context.Context, data []byte, addr net.Addr) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr.String())
-	if err != nil {
-		return err
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok {
+		var err error
+		udpAddr, err = net.ResolveUDPAddr("udp", addr.String())
+		if err != nil {
+			return err
+		}
 	}
-	_, err = u.conn.WriteToUDP(data, udpAddr)
+	_, err := u.conn.WriteToUDP(data, udpAddr)
 	return err
 }
 

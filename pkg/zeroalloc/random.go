@@ -26,3 +26,12 @@ func GenerateRandomUint64() uint64 {
 	}
 	return binary.BigEndian.Uint64(b[:])
 }
+
+func FillRandomBytes(buf []byte) {
+	if _, err := rand.Read(buf); err != nil {
+		// fallback
+		for i := range buf {
+			buf[i] = byte(i % 256)
+		}
+	}
+}

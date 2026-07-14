@@ -19,7 +19,10 @@ func NewUDPListener(localAddr string) (*UDPListener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &UDPListener{conn: conn, addr: addr}, nil
+	return &UDPListener{
+		conn: conn,
+		addr: conn.LocalAddr(), // реальный адрес с портом
+	}, nil
 }
 
 func (l *UDPListener) Accept() (*UDPConn, error) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -36,7 +37,7 @@ func main() {
 		RetryTimeout:  *retryTO,
 	}
 
-	client, err := udp.NewClient(cfg, log)
+	client, err := udp.NewClient(cfg, log, os.Stdout)
 	if err != nil {
 		log.Fatal("client create: %v", err)
 	}

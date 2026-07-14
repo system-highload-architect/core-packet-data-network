@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -27,7 +28,7 @@ func main() {
 		ServerAddr: *listenAddr,
 	}
 
-	server, err := udp.NewServer(cfg, log)
+	server, err := udp.NewServer(cfg, log, os.Stdout)
 	if err != nil {
 		log.Fatal("server create: %v", err)
 	}
