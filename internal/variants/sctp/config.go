@@ -1,8 +1,8 @@
 package sctp
 
 type Config struct {
-	ListenAddr    string
-	RemoteAddr    string
+	ServerAddr    string
+	ClientAddr    string
 	TotalPackets  uint64
 	MaxPacketSize int
 	BenchMode     bool
@@ -11,8 +11,8 @@ type Config struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:    "127.0.0.1:5000",
-		RemoteAddr:    "127.0.0.1:5000",
+		ServerAddr:    "127.0.0.1:9000",
+		ClientAddr:    "127.0.0.1:0",
 		TotalPackets:  10000,
 		MaxPacketSize: 1400,
 	}

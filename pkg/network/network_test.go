@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// generateTLSConfig создаёт самоподписанный TLS-сертификат для QUIC.
+// generateTLSConfig создаёт самоподписанный TLS-сертификат для тестов QUIC.
 func generateTLSConfig() (*tls.Config, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -59,16 +59,21 @@ func TestUDPConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create UDP server: %v", err)
 	}
+	// RU: Close() теперь не принимает контекст по интерфейсу Closer
+	// EN: Close() no longer takes context to match Closer interface signature
 	defer server.Close(ctx)
 
 	go func() {
-		msg, err := server.Receive(ctx)
+		// RU: Используем ReceiveTo для чтения без аллокаций
+		// EN: Use ReceiveTo to verify zero-allocation network reads
+		buf := make([]byte, 1024)
+		n, _, err := server.ReceiveTo(buf)
 		if err != nil {
 			t.Errorf("server receive error: %v", err)
 			return
 		}
-		if msg == nil || string(msg.Data) != "hello" {
-			t.Errorf("expected 'hello', got '%s'", string(msg.Data))
+		if string(buf[:n]) != "hello" {
+			t.Errorf("expected 'hello', got '%s'", string(buf[:n]))
 		}
 	}()
 
@@ -95,7 +100,7 @@ func TestSCTPConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("SCTP not supported or error: %v", err)
 	}
-	defer listener.Close(ctx)
+	defer listener.Close()
 
 	go func() {
 		conn, err := listener.Accept()
@@ -103,10 +108,12 @@ func TestSCTPConn(t *testing.T) {
 			t.Errorf("accept error: %v", err)
 			return
 		}
-		defer conn.Close(ctx)
+		defer conn.Close()
 
+		// RU: Тестируем метод ReceiveTo у SCTP Conn
+		// EN: Validate high-performance ReceiveTo on SCTP connection instance
 		buf := make([]byte, 1024)
-		n, err := conn.conn.Read(buf) // доступ к *sctp.SCTPConn
+		n, _, err := conn.ReceiveTo(buf)
 		if err != nil {
 			t.Errorf("read error: %v", err)
 			return
@@ -114,7 +121,10 @@ func TestSCTPConn(t *testing.T) {
 		if string(buf[:n]) != "hello" {
 			t.Errorf("expected 'hello', got '%s'", string(buf[:n]))
 		}
-		if _, err := conn.conn.Write([]byte("ack")); err != nil {
+
+		// RU: Шлем ответ обратно
+		// EN: Stream acknowledgement back to the caller
+		if err := conn.Send(ctx, []byte("ack"), nil); err != nil {
 			t.Errorf("write error: %v", err)
 		}
 	}()
@@ -125,7 +135,7 @@ func TestSCTPConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("SCTP client error: %v", err)
 	}
-	defer client.Close(ctx)
+	defer client.Close()
 
 	if err := client.Send(ctx, []byte("hello"), nil); err != nil {
 		t.Fatalf("client send error: %v", err)
@@ -145,7 +155,7 @@ func TestQUICConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("QUIC listener error: %v", err)
 	}
-	defer listener.Close(ctx)
+	defer listener.Close()
 
 	errCh := make(chan error, 1)
 
@@ -155,19 +165,22 @@ func TestQUICConn(t *testing.T) {
 			errCh <- fmt.Errorf("accept failed: %w", err)
 			return
 		}
-		defer conn.Close(ctx)
+		defer conn.Close()
 
-		data, err := conn.ReceiveDatagram(ctx)
+		// RU: Тестируем ReceiveTo для QUIC-датаграмм под v0.60.0
+		// EN: Test zero-allocation ReceiveTo for QUIC datagrams under v0.60.0
+		buf := make([]byte, 1024)
+		n, _, err := conn.ReceiveTo(buf)
 		if err != nil {
 			errCh <- fmt.Errorf("receive datagram failed: %w", err)
 			return
 		}
-		if string(data) != "hello" {
-			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(data))
+		if string(buf[:n]) != "hello" {
+			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(buf[:n]))
 			return
 		}
 
-		err = conn.SendDatagram([]byte("ack"))
+		err = conn.Send(ctx, []byte("ack"), nil)
 		errCh <- err
 	}()
 
@@ -177,18 +190,19 @@ func TestQUICConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("QUIC client error: %v", err)
 	}
-	defer client.Close(ctx)
+	defer client.Close()
 
-	if err := client.SendDatagram([]byte("hello")); err != nil {
+	if err := client.Send(ctx, []byte("hello"), nil); err != nil {
 		t.Fatalf("send datagram error: %v", err)
 	}
 
-	data, err := client.ReceiveDatagram(ctx)
+	buf := make([]byte, 1024)
+	n, _, err := client.ReceiveTo(buf)
 	if err != nil {
 		t.Fatalf("receive datagram error: %v", err)
 	}
-	if string(data) != "ack" {
-		t.Errorf("expected 'ack', got '%s'", string(data))
+	if string(buf[:n]) != "ack" {
+		t.Errorf("expected 'ack', got '%s'", string(buf[:n]))
 	}
 
 	select {

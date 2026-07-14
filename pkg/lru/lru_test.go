@@ -62,55 +62,103 @@ func TestCache_Finalizer(t *testing.T) {
 	}
 }
 
-func TestLayerCache_Promote(t *testing.T) {
+// RU: Тестируем выталкивание элементов по слоям при наступлении таймаута (Timing Wheel)
+// EN: Validate sequential layered promotion routines upon deadline breach conditions
+func TestLayerCache_PromoteLayer(t *testing.T) {
 	configs := []LayerConfig{
-		{TTL: time.Hour, MaxAttempt: 1},
-		{TTL: time.Hour, MaxAttempt: 2},
-		{TTL: time.Hour, MaxAttempt: 3},
+		{TTL: 10 * time.Millisecond}, // Слой 0
+		{TTL: 20 * time.Millisecond}, // Слой 1
+		{TTL: 30 * time.Millisecond}, // Слой 2
 	}
-	lc := NewLayerCache[string, int](configs, nil)
+
+	// RU: Используем явный указатель на время для защиты от рассинхронизации
+	// EN: Use an explicit time pointer to prevent closure desynchronization
+	currentTime := time.Now()
+	fixedNow := func() time.Time { return currentTime }
+
+	// RU: ИСХОДНОЕ ИСПРАВЛЕНИЕ: используем Линейный Backoff с шагом 10мс, чтобы интервалы
+	// RU: слоев в тесте идеально совпадали с расчетом дедлайнов (10мс, 20мс, 30мс)!
+	// EN: CRITICAL FIX: Use LinearBackoff with a 10ms step to match layer intervals
+	// EN: perfectly with deadline calculations (10ms, 20ms, 30ms) inside this test!
+	backoffStrategy := &LinearBackoff{Interval: 10 * time.Millisecond}
+
+	lc := NewLayerCache[string, int](configs, backoffStrategy, WithNowFunc[string, int](fixedNow))
 	lc.Set("key1", 100)
 
-	if !lc.Promote("key1") {
-		t.Error("first Promote should return true")
-	}
-	val, ok := lc.Get("key1")
-	if !ok || val != 100 {
-		t.Errorf("expected value 100 after first promote, got %d, ok=%v", val, ok)
+	// RU: Шаг 1: Сдвигаем время за дедлайн Слоя 0 (10мс)
+	// EN: Step 1: Advance time past Layer 0 deadline (10ms)
+	currentTime = currentTime.Add(15 * time.Millisecond)
+
+	key, val, layerIdx, found := lc.PeekExpiredScan()
+	if !found || layerIdx != 0 || val != 100 {
+		t.Fatalf("expected expired key1 on layer 0, got layerIdx=%d, found=%v", layerIdx, found)
 	}
 
-	if !lc.Promote("key1") {
-		t.Error("second Promote should return true")
-	}
-	val, ok = lc.Get("key1")
-	if !ok || val != 100 {
-		t.Errorf("expected value 100 after second promote, got %d, ok=%v", val, ok)
+	// Выталкиваем на Слой 1
+	_, alive := lc.PromoteLayer(key, layerIdx)
+	if !alive {
+		t.Error("packet should be alive when moving from layer 0 to layer 1")
 	}
 
-	if lc.Promote("key1") {
-		t.Error("third Promote should return false (last layer)")
+	// RU: Шаг 2: Элемент на Слое 1. LinearBackoff.Next(1) вернет ровно 20мс!
+	// RU: Чтобы гарантированно просрочить его, сдвигаем время на 25мс вперед.
+	// EN: Step 2: Item is on Layer 1. LinearBackoff.Next(1) returns exactly 20ms.
+	// EN: Advance time by 25ms to trigger expiration.
+	currentTime = currentTime.Add(25 * time.Millisecond)
+
+	key, val, layerIdx, found = lc.PeekExpiredScan()
+	if !found || layerIdx != 1 {
+		t.Fatalf("expected to find expired key1 on layer 1, layerIdx=%d, found=%v", layerIdx, found)
 	}
-	_, ok = lc.Get("key1")
-	if ok {
-		t.Error("expected key to be deleted after third promote")
+
+	// Выталкиваем на Слой 2 (крайний слой)
+	_, alive = lc.PromoteLayer(key, layerIdx)
+	if !alive {
+		t.Error("packet should be alive when moving from layer 1 to layer 2")
+	}
+
+	// RU: Шаг 3: Элемент на Слое 2. LinearBackoff.Next(2) вернет ровно 30мс!
+	// RU: Чтобы гарантированно просрочить Слой 2, сдвигаем время на 35мс вперед.
+	// EN: Step 3: Item is on Layer 2. LinearBackoff.Next(2) returns exactly 30ms.
+	// EN: Advance time by 35ms to trigger expiration.
+	currentTime = currentTime.Add(35 * time.Millisecond)
+
+	key, val, layerIdx, found = lc.PeekExpiredScan()
+	if !found || layerIdx != 2 {
+		t.Fatalf("expected to find expired key1 on terminal layer 2, layerIdx=%d, found=%v", layerIdx, found)
+	}
+
+	// Пытаемся вытолкнуть дальше последнего слоя — должен вернуться статус мертв (LOST)
+	_, alive = lc.PromoteLayer(key, layerIdx)
+	if alive {
+		t.Error("PromoteLayer on terminal layer should return alive=false (LOST)")
+	}
+
+	// Проверяем, что пакет полностью удален из памяти
+	if _, ok := lc.Get("key1"); ok {
+		t.Error("packet should be completely deleted from all layers after exhausting retries")
 	}
 }
 
 func TestLayerCache_GetAcrossLayers(t *testing.T) {
 	configs := []LayerConfig{
-		{TTL: time.Hour, MaxAttempt: 1},
-		{TTL: time.Hour, MaxAttempt: 2},
+		{TTL: time.Hour},
+		{TTL: time.Hour},
 	}
 	lc := NewLayerCache[string, int](configs, nil)
 	lc.Set("key1", 10)
+
 	val, ok := lc.Get("key1")
 	if !ok || val != 10 {
 		t.Errorf("expected 10, got %d", val)
 	}
-	lc.Promote("key1")
+
+	// Вручную перекидываем из слоя 0 в слой 1
+	lc.PromoteLayer("key1", 0)
+
 	val, ok = lc.Get("key1")
 	if !ok || val != 10 {
-		t.Errorf("expected 10 after promote, got %d", val)
+		t.Errorf("expected 10 after promotion, got %d", val)
 	}
 }
 

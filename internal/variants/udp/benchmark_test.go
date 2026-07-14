@@ -56,6 +56,7 @@ func BenchmarkUDPThroughput(b *testing.B) {
 			MaxPacketSize: maxSize,
 			BenchMode:     true,
 			PregenPackets: pregen.Packets[:total],
+			Workers:       20, // RU: Для бенчмарка разгоняем до 20 потоков! | EN: Crank up to 20 workers for pure benchmark performance!
 		}
 
 		server, err := NewServer(srvCfg, log, out)

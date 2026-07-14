@@ -10,7 +10,7 @@ import (
 )
 
 type QUICConn struct {
-	conn *quic.Conn
+	conn *quic.Conn // RU: Используем quic.Conn в соответствии с вашей версией библиотеки | EN: Use quic.Conn according to your library version
 	addr net.Addr
 }
 
@@ -21,11 +21,13 @@ func NewQUICConnClient(ctx context.Context, serverAddr string, tlsConfig *tls.Co
 	}
 	quicConf := &quic.Config{
 		EnableDatagrams:       true,
-		MaxIncomingStreams:    1000, // разрешаем потоки
+		MaxIncomingStreams:    1000,
 		MaxIncomingUniStreams: 1000,
 		KeepAlivePeriod:       5 * time.Second,
 		MaxIdleTimeout:        30 * time.Second,
 	}
+
+	// DialAddr возвращает quic.Conn в текущей версии библиотеки
 	conn, err := quic.DialAddr(ctx, addr.String(), tlsConfig, quicConf)
 	if err != nil {
 		return nil, err
@@ -36,18 +38,30 @@ func NewQUICConnClient(ctx context.Context, serverAddr string, tlsConfig *tls.Co
 	}, nil
 }
 
-// SendDatagram отправляет датаграмму.
-func (q *QUICConn) SendDatagram(payload []byte) error {
-	return q.conn.SendDatagram(payload)
+// Send реализует интерфейс Sender через датаграммы (для максимальной скорости)
+func (q *QUICConn) Send(ctx context.Context, data []byte, addr net.Addr) error {
+	return q.conn.SendDatagram(data)
 }
 
-// ReceiveDatagram принимает датаграмму.
-func (q *QUICConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+// Receive реализует интерфейс Receiver (старый вариант с аллокациями)
+func (q *QUICConn) Receive(ctx context.Context) (*Message, error) {
 	msg, err := q.conn.ReceiveDatagram(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return msg, nil
+	return &Message{Addr: q.conn.RemoteAddr(), Data: msg}, nil
+}
+
+// ReceiveTo реализует ВЫСОКОПРОИЗВОДИТЕЛЬНОЕ чтение датаграмм без аллокаций
+func (q *QUICConn) ReceiveTo(buf []byte) (int, net.Addr, error) {
+	// quic-go принимает датаграмму во внутренний буфер
+	msg, err := q.conn.ReceiveDatagram(context.Background())
+	if err != nil {
+		return 0, nil, err
+	}
+	// Копируем данные напрямую в наш переиспользуемый буфер (Zero Allocations в куче)
+	n := copy(buf, msg)
+	return n, q.conn.RemoteAddr(), nil
 }
 
 // OpenStreamSync открывает поток синхронно.
@@ -60,8 +74,8 @@ func (q *QUICConn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 	return q.conn.AcceptStream(ctx)
 }
 
-// Close закрывает QUIC-соединение.
-func (q *QUICConn) Close(ctx context.Context) error {
+// Close закрывает QUIC-соединение (соответствует интерфейсу Closer)
+func (q *QUICConn) Close() error {
 	return q.conn.CloseWithError(0, "closed")
 }
 
@@ -69,7 +83,6 @@ func (q *QUICConn) Addr() net.Addr {
 	return q.addr
 }
 
-// RemoteAddr возвращает удалённый адрес.
 func (q *QUICConn) RemoteAddr() net.Addr {
 	return q.conn.RemoteAddr()
 }

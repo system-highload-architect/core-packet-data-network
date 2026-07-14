@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"core-packet-data-network/internal/common/logger"
+	"core-packet-data-network/pkg/lru"
 	"core-packet-data-network/pkg/network"
 	"core-packet-data-network/pkg/order"
 	"core-packet-data-network/pkg/packet"
@@ -19,8 +20,6 @@ import (
 	"core-packet-data-network/pkg/zeroalloc"
 )
 
-// Client инкапсулирует логику UDP-клиента
-// Client encapsulates the UDP client runtime logic
 type Client struct {
 	config        *Config
 	conn          *network.UDPConn
@@ -28,8 +27,11 @@ type Client struct {
 	log           *logger.Logger
 	out           io.Writer
 	orderedOutput *order.OrderedBuffer[string]
-	pending       map[uint64]*pendingPacket
-	pendingMu     sync.Mutex
+
+	// RU: Наш многослойный кэш дедлайнов вместо сырой мапы
+	// EN: Hierarchical deadline cache tier replacing legacy map structures
+	layerCache *lru.LayerCache[uint64, *pendingPacket]
+	pendingMu  sync.Mutex
 
 	sentCount atomic.Uint64
 	ackCount  atomic.Uint64
@@ -40,17 +42,11 @@ type Client struct {
 	shutdowner *shutdown.Shutdowner
 }
 
-// pendingPacket хранит метаданные пакета для повторной отправки
-// pendingPacket maintains packet metadata required for retransmissions
 type pendingPacket struct {
 	data     []byte
-	checksum [32]byte // RU: Меняем []byte на [32]byte | EN: Change []byte to [32]byte
-	attempts int
-	lastSent time.Time
+	checksum []byte
 }
 
-// NewClient инициализирует и настраивает сетевые буферы клиента
-// NewClient initializes and configures local client network buffers
 func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) {
 	if out == nil {
 		out = os.Stdout
@@ -60,14 +56,20 @@ func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) 
 		return nil, fmt.Errorf("udp client: %w", err)
 	}
 
-	// RU: Выделяем 8 МБ под системные буферы сокета для Highload
-	// EN: Allocate 8 MB for system socket buffers to handle Highload workloads
 	conn.SetReadBuffer(8 * 1024 * 1024)
 	conn.SetWriteBuffer(8 * 1024 * 1024)
 
 	serverAddr, err := net.ResolveUDPAddr("udp", cfg.ServerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve server addr: %w", err)
+	}
+
+	// RU: Конфигурируем 3 слоя экспоненциального Backoff ожидания
+	// EN: Provisions 3 layers of sequential exponential backoff windows
+	layerConfigs := []lru.LayerConfig{
+		{TTL: cfg.RetryTimeout},     // Слой 0: 100мс (Быстрый)
+		{TTL: cfg.RetryTimeout * 2}, // Слой 1: 200мс (Средний)
+		{TTL: cfg.RetryTimeout * 4}, // Слой 2: 400мс (Экстренный)
 	}
 
 	c := &Client{
@@ -77,7 +79,7 @@ func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) 
 		log:           log,
 		out:           out,
 		orderedOutput: order.NewOrderedBuffer[string](1),
-		pending:       make(map[uint64]*pendingPacket),
+		layerCache:    lru.NewLayerCache[uint64, *pendingPacket](layerConfigs, lru.NewExponentialBackoff()),
 		stopCh:        make(chan struct{}),
 	}
 
@@ -86,19 +88,18 @@ func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) 
 	return c, nil
 }
 
-// Run запускает воркеры отправки и диспетчеры подтверждений
-// Run starts transmission workers and acknowledgement dispatchers
 func (c *Client) Run() error {
 	c.log.Info("UDP client starting", "server", c.config.ServerAddr)
 	go c.ackReceiver()
 
-	workers := 20
+	workers := c.config.Workers
 	for i := 0; i < workers; i++ {
 		c.workerWg.Add(1)
 		go c.generator(i, workers)
 	}
+
 	if !c.config.BenchMode {
-		go c.retransmitter()
+		go c.retransmitterDaemon() // RU: Запуск умного демона | EN: Ignite smart background daemon
 	}
 
 	c.workerWg.Wait()
@@ -115,26 +116,28 @@ func (c *Client) Run() error {
 			}
 		}
 	} else {
-		deadline := time.After(30 * time.Second)
-		ticker := time.NewTicker(500 * time.Millisecond)
+		// RU: Даем слоям кэша честно выгрести все хвосты перед выходом
+		// EN: Provide a solid gap for the layers to flush out remaining items
+		deadline := time.After(15 * time.Second)
+		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 		for {
-			c.pendingMu.Lock()
-			pendingLen := len(c.pending)
-			c.pendingMu.Unlock()
-			if pendingLen == 0 {
+			// RU: Исправлено: вызываем инкапсулированный метод Len() вместо прямого доступа к полю
+			// EN: Fixed: call encapsulated Len() method instead of directly accessing private fields
+			if c.layerCache.Len() == 0 {
 				break
 			}
 			select {
 			case <-ticker.C:
 			case <-deadline:
-				c.log.Warn("timeout waiting for ACKs")
+				c.log.Warn("timeout waiting for retransmit layers to deplete")
 				goto exit
 			}
 		}
 	}
+
 exit:
-	c.log.Info("client metrics",
+	c.log.Info("client metrics completed",
 		"sent", c.sentCount.Load(),
 		"acked", c.ackCount.Load(),
 		"lost", c.lostCount.Load(),
@@ -142,8 +145,6 @@ exit:
 	return nil
 }
 
-// generator параллельно генерирует и шлет пакеты без аллокаций в куче
-// generator concurrently constructs and sends packets with zero heap allocations
 func (c *Client) generator(idx, step int) {
 	defer c.workerWg.Done()
 
@@ -155,19 +156,12 @@ func (c *Client) generator(idx, step int) {
 			default:
 			}
 			data := c.config.PregenPackets[id-1]
-			if err := c.conn.Send(context.Background(), data, c.serverAddr); err != nil {
-				if isClosedNetworkError(err) {
-					return
-				}
-				continue
-			}
+			_ = c.conn.Send(context.Background(), data, c.serverAddr)
 			c.sentCount.Add(1)
 		}
 		return
 	}
 
-	// RU: Аллокация переиспользуемых буферов строго внутри горутины, но вне цикла отправки
-	// EN: Allocate reusable byte arrays explicitly inside the goroutine scope but outside the hot loop
 	serializeBuf := make([]byte, 0, c.config.MaxPacketSize+128)
 	rawBuf := make([]byte, c.config.MaxPacketSize)
 
@@ -178,23 +172,16 @@ func (c *Client) generator(idx, step int) {
 		default:
 		}
 
-		// RU: Расчет размера данных строго по ТЗ: в пределах <номер пакета> - <2 * номер пакета>
-		// EN: Payload boundary constraints calculated according to specification: <ID> up to <2 * ID>
 		minLen := int(id)
 		maxLen := 2 * int(id)
 		dataLen := minLen
 		if maxLen > minLen {
 			dataLen = minLen + (int(id) % (maxLen - minLen + 1))
 		}
-
-		// RU: Ограничиваем размер рамками MTU конфигурации
-		// EN: Tighten data slice size to prevent exceeding standard MTU bounds
 		if dataLen > c.config.MaxPacketSize {
 			dataLen = c.config.MaxPacketSize
 		}
 
-		// RU: Безопасное заполнение без лишних аллокаций
-		// EN: Secure data population avoiding extra memory overhead
 		payload := rawBuf[:dataLen]
 		zeroalloc.FillRandomBytes(payload)
 
@@ -204,67 +191,50 @@ func (c *Client) generator(idx, step int) {
 			Data:      payload,
 		}
 
-		// RU: Сбрасываем длину буфера сериализации, сохраняя его cap
-		// EN: Reset serialization buffer slice boundaries while preserving capacity
 		serializeBuf = serializeBuf[:0]
 		data, err := pkt.SerializeTo(serializeBuf)
 		if err != nil {
 			continue
 		}
 
-		if err := c.conn.Send(context.Background(), data, c.serverAddr); err != nil {
-			if isClosedNetworkError(err) {
-				return
-			}
-			continue
-		}
+		_ = c.conn.Send(context.Background(), data, c.serverAddr)
 		c.sentCount.Add(1)
 
 		if !c.config.BenchMode {
-			// RU: Для данных по-прежнему делаем копию, а массив [32]byte копируется автоматически по значению!
-			// EN: We still copy the dynamic data slice, but the [32]byte array is copied automatically by value!
 			pendingData := make([]byte, len(pkt.Data))
 			copy(pendingData, pkt.Data)
 
-			c.pendingMu.Lock()
-			c.pending[id] = &pendingPacket{
+			// RU: Создаем указатель на структуру и сразу передаем в кэш — переменная использована!
+			// EN: Instantiate structure pointer and seed directly into cache — variable is used!
+			c.layerCache.Set(id, &pendingPacket{
 				data:     pendingData,
-				checksum: pkt.Checksum, // RU: Просто присваиваем, ноль аллокаций | EN: Plain assignment, zero allocations
-				attempts: 1,
-				lastSent: time.Now(),
-			}
-			c.pendingMu.Unlock()
+				checksum: pkt.Checksum[:],
+			})
 		}
 	}
 }
 
-// ackReceiver принимает подтверждения и отправляет их в упорядоченный пайплайн вывода
-// ackReceiver ingests incoming ACKs and channels them down to the ordered ring buffer
 func (c *Client) ackReceiver() {
 	// RU: Фиксированный массив на стеке для приема ACK-пакетов
 	// EN: Fixed stack array allocation for incoming ACK structures
 	var ackBuf [32]byte
-
 	for {
 		n, _, err := c.conn.ReceiveTo(ackBuf[:])
 		if err != nil {
-			if isClosedNetworkError(err) {
-				return
-			}
 			return
 		}
 		if n < 9 {
 			continue
 		}
 		id := binary.BigEndian.Uint64(ackBuf[0:8])
-		success := ackBuf[8] == 1 // RU: Индексация по фиксированному локальному массиву | EN: Evaluate bounds matching fixed array indices
+		success := ackBuf[8] == 1
 
 		c.ackCount.Add(1)
 
 		if !c.config.BenchMode {
-			c.pendingMu.Lock()
-			delete(c.pending, id)
-			c.pendingMu.Unlock()
+			// RU: Прилетел ACK — полностью стираем пакет из всех слоев! Доставлено!
+			// EN: ACK received — instantly wipe item references from all storage layers!
+			c.layerCache.Delete(id)
 
 			var result string
 			if success {
@@ -279,73 +249,69 @@ func (c *Client) ackReceiver() {
 	}
 }
 
-// retransmitter отслеживает таймауты и осуществляет повторную отправку без блокировки мапы сетевыми вызовами
-// retransmitter tracks packet deadlines and fires re-sends avoiding blocking the storage map with network calls
-func (c *Client) retransmitter() {
-	ticker := time.NewTicker(c.config.RetryTimeout)
-	defer ticker.Stop()
-
-	type retryTask struct {
-		id   uint64
-		data []byte
-	}
-
+func (c *Client) retransmitterDaemon() {
 	for {
 		select {
 		case <-c.stopCh:
 			return
-		case <-ticker.C:
-			var tasks []retryTask
-			now := time.Now()
+		default:
+		}
 
-			c.pendingMu.Lock()
-			for id, pp := range c.pending {
-				if now.Sub(pp.lastSent) > c.config.RetryTimeout {
-					if pp.attempts >= c.config.MaxRetries {
-						c.lostCount.Add(1)
-						delete(c.pending, id)
+		var alive bool
 
-						result := fmt.Sprintf("ID=%d LOST", id)
-						for _, r := range c.orderedOutput.Insert(id, result) {
-							fmt.Fprintln(c.out, r)
-						}
-						continue
-					}
+		// RU: Шаг 1: Ищем УЖЕ просроченные по TTL элементы среди слоев
+		// EN: Step 1: Scan for elements that have ALREADY breached their layer TTL bounds
+		id, pp, layerIdx, foundExpired := c.layerCache.PeekExpiredScan()
 
-					pkt := packet.Packet{
-						ID:        id,
-						Timestamp: now,
-						Data:      pp.data,
-						Checksum:  pp.checksum, // RU: Прямое присвоение массива [32]byte | EN: Direct [32]byte array assignment
-					}
+		if foundExpired {
+			// RU: Продвигаем элемент на следующий слой Backoff
+			// EN: Attempt moving expired element up into the next backoff stage
+			pp, alive = c.layerCache.PromoteLayer(id, layerIdx)
 
-					data, err := pkt.Serialize()
-					if err != nil {
-						continue
-					}
-
-					tasks = append(tasks, retryTask{id: id, data: data})
-					pp.attempts++
-					pp.lastSent = now
+			if !alive {
+				// RU: Все попытки исчерпаны — это честный LOST
+				// EN: All retries across all tiers exhausted — mark LOST
+				c.lostCount.Add(1)
+				result := fmt.Sprintf("ID=%d LOST", id)
+				for _, r := range c.orderedOutput.Insert(id, result) {
+					fmt.Fprintln(c.out, r)
 				}
+				continue
 			}
-			c.pendingMu.Unlock()
 
-			// RU: Отправка пакетов по сети выполняется ПОСЛЕ снятия мьютекса c.pendingMu
-			// EN: Network package distribution executes explicitly AFTER releasing the c.pendingMu mutex lock
-			for _, task := range tasks {
-				if err := c.conn.Send(context.Background(), task.data, c.serverAddr); err != nil {
-					if isClosedNetworkError(err) {
-						return
-					}
-				}
+			// RU: Пакет жив! Перевыпускаем в сеть с обновленным штампом времени
+			// EN: Item promoted! Re-serialize payload snapshot and fire onto network pipe
+			pkt := packet.Packet{
+				ID:        id,
+				Timestamp: time.Now(),
+				Data:      pp.data, // RU: Теперь переменная pp используется корректно!
 			}
+			copy(pkt.Checksum[:], pp.checksum)
+
+			data, err := pkt.Serialize()
+			if err == nil {
+				_ = c.conn.Send(context.Background(), data, c.serverAddr)
+			}
+			continue // Выгребаем просроченную очередь без засыпания
+		}
+
+		// RU: Шаг 2: Просроченных нет. Вычисляем точное время сна до ближайшего дедлайна
+		// EN: Step 2: No expired tasks found. Map next sleep interval down to microsecond deadlines
+		earliestDeadline, hasActiveDeadlines := c.layerCache.GetEarliestDeadline()
+
+		if !hasActiveDeadlines {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+
+		now := time.Now()
+		if earliestDeadline.After(now) {
+			sleepDuration := earliestDeadline.Sub(now)
+			time.Sleep(sleepDuration) // Спим в точности до миллисекунды смерти ближайшего пакета
 		}
 	}
 }
 
-// Shutdown осуществляет корректное завершение работы клиента
-// Shutdown coordinates graceful termination routines across client background routines
 func (c *Client) Shutdown(ctx context.Context) error {
 	close(c.stopCh)
 	c.workerWg.Wait()

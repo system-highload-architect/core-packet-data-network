@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,7 +14,6 @@ import (
 	"core-packet-data-network/pkg/network"
 	"core-packet-data-network/pkg/order"
 	"core-packet-data-network/pkg/packet"
-	"core-packet-data-network/pkg/shutdown"
 	"core-packet-data-network/pkg/zeroalloc"
 )
 
@@ -26,44 +26,37 @@ type Client struct {
 
 	sentCount atomic.Uint64
 	ackCount  atomic.Uint64
-	lostCount atomic.Uint64
 
-	stopCh     chan struct{}
-	workerWg   sync.WaitGroup
-	shutdowner *shutdown.Shutdowner
+	workerWg sync.WaitGroup
+	stopCh   chan struct{}
 }
 
 func NewClient(cfg *Config, log *logger.Logger, out io.Writer) (*Client, error) {
 	if out == nil {
-		out = io.Discard
-	}
-	conn, err := network.NewSCTPConn(cfg.RemoteAddr)
-	if err != nil {
-		return nil, fmt.Errorf("sctp client: %w", err)
+		out = os.Stdout
 	}
 
-	c := &Client{
+	// Устанавливаем единое SCTP соединение с сервером
+	conn, err := network.NewSCTPConn(cfg.ServerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("sctp client connection failed: %w", err)
+	}
+
+	return &Client{
 		config:        cfg,
 		conn:          conn,
 		log:           log,
 		out:           out,
 		orderedOutput: order.NewOrderedBuffer[string](1),
 		stopCh:        make(chan struct{}),
-	}
-
-	c.shutdowner = shutdown.New()
-	c.shutdowner.Register("sctp client conn", conn, shutdown.PriorityHigh)
-	return c, nil
+	}, nil
 }
 
 func (c *Client) Run() error {
-	c.log.Info("SCTP client starting", "server", c.config.RemoteAddr)
+	c.log.Info("SCTP client session established", "server", c.config.ServerAddr)
+	go c.ackReceiver()
 
-	// Запускаем горутину-читатель ACK
-	go c.ackReader()
-
-	// Генераторы (20 штук)
-	workers := 20
+	workers := 10 // Требование ТЗ по параллельным потокам
 	for i := 0; i < workers; i++ {
 		c.workerWg.Add(1)
 		go c.generator(i, workers)
@@ -71,23 +64,22 @@ func (c *Client) Run() error {
 
 	c.workerWg.Wait()
 
-	if c.config.BenchMode {
-		deadline := time.After(10 * time.Second)
-		for c.ackCount.Load() < c.config.TotalPackets {
-			select {
-			case <-deadline:
-				c.log.Warn("timeout waiting for ACKs")
-				goto exit
-			default:
-				time.Sleep(5 * time.Millisecond)
-			}
+	// Ожидание финальных ACK подтверждений от сервера
+	deadline := time.After(10 * time.Second)
+	for c.ackCount.Load() < c.config.TotalPackets {
+		select {
+		case <-deadline:
+			c.log.Warn("timeout waiting for SCTP ACKs")
+			goto exit
+		default:
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
+
 exit:
-	c.log.Info("client metrics",
+	c.log.Info("SCTP client session completed",
 		"sent", c.sentCount.Load(),
 		"acked", c.ackCount.Load(),
-		"lost", c.lostCount.Load(),
 	)
 	return nil
 }
@@ -104,66 +96,92 @@ func (c *Client) generator(idx, step int) {
 			}
 			data := c.config.PregenPackets[id-1]
 			if err := c.conn.Send(context.Background(), data, nil); err != nil {
-				c.log.Error("send error", "id", id, "error", err)
-				continue
+				return
 			}
 			c.sentCount.Add(1)
 		}
 		return
 	}
 
-	buf := make([]byte, 0, c.config.MaxPacketSize+64)
-	dataBuf := make([]byte, c.config.MaxPacketSize)
+	serializeBuf := make([]byte, 0, c.config.MaxPacketSize+128)
+	rawBuf := make([]byte, c.config.MaxPacketSize)
+
 	for id := uint64(1) + uint64(idx); id <= c.config.TotalPackets; id += uint64(step) {
 		select {
 		case <-c.stopCh:
 			return
 		default:
 		}
-		dataLen := int(id) % c.config.MaxPacketSize
-		if dataLen < 1 {
-			dataLen = 1
+
+		minLen := int(id)
+		maxLen := 2 * int(id)
+		dataLen := minLen
+		if maxLen > minLen {
+			dataLen = minLen + (int(id) % (maxLen - minLen + 1))
 		}
-		zeroalloc.FillRandomBytes(dataBuf[:dataLen])
+		if dataLen > c.config.MaxPacketSize {
+			dataLen = c.config.MaxPacketSize
+		}
+
+		payload := rawBuf[:dataLen]
+		zeroalloc.FillRandomBytes(payload)
+
 		pkt := packet.Packet{
 			ID:        id,
 			Timestamp: time.Now(),
-			Data:      dataBuf[:dataLen],
+			Data:      payload,
 		}
-		data, err := pkt.SerializeTo(buf)
+
+		serializeBuf = serializeBuf[:0]
+		data, err := pkt.SerializeTo(serializeBuf)
 		if err != nil {
 			continue
 		}
-		buf = data[:0]
+
 		if err := c.conn.Send(context.Background(), data, nil); err != nil {
-			c.log.Error("send error", "id", id, "error", err)
-			continue
+			return
 		}
 		c.sentCount.Add(1)
 	}
 }
+func (c *Client) ackReceiver() {
+	// RU: Жесткий фиксированный массив на стеке горутины. Ноль аллокаций в куче!
+	// EN: Fixed-size array strictly allocated on the goroutine stack. Zero heap allocations!
+	var ackBuf [16]byte
 
-func (c *Client) ackReader() {
 	for {
-		msg, err := c.conn.Receive(context.Background())
+		// RU: Передаем срез фиксированного стекового массива. Данные пишутся in-place.
+		// EN: Pass a slice of the fixed stack array. Data is written in-place.
+		n, _, err := c.conn.ReceiveTo(ackBuf[:])
 		if err != nil {
-			c.log.Error("ack read error", "error", err)
 			return
 		}
-		if len(msg.Data) < 9 {
+		// RU: Защита: ACK-пакет должен содержать как минимум 8 байт ID + 1 байт статус
+		// EN: Guard: ACK packet must contain at least 8 bytes ID + 1 byte status
+		if n < 9 {
 			continue
 		}
-		id := binary.BigEndian.Uint64(msg.Data[0:8])
-		success := msg.Data[8] == 1
+
+		// RU: Декодируем ID пакета из первых 8 байт
+		// EN: Decode packet ID from the first 8 bytes
+		id := binary.BigEndian.Uint64(ackBuf[0:8])
+
+		// RU: Исправлено: читаем статус успеха строго из 8-го байта пришедших данных
+		// EN: Fixed: evaluate success status strictly from the 8th byte of incoming data
+		success := ackBuf[8] == 1
+
 		c.ackCount.Add(1)
 
 		if !c.config.BenchMode {
 			var result string
 			if success {
-				result = fmt.Sprintf("ID=%d OK", id)
+				result = fmt.Sprintf("ID=%d OK (SCTP)", id)
 			} else {
-				result = fmt.Sprintf("ID=%d FAIL", id)
+				result = fmt.Sprintf("ID=%d FAIL (SCTP)", id)
 			}
+
+			// RU: Потоковый вывод строго по порядку номеров через кольцевой буфер
+			// EN: Streaming output strictly sorted by IDs via ring buffer framework
 			for _, r := range c.orderedOutput.Insert(id, result) {
 				fmt.Fprintln(c.out, r)
 			}
@@ -171,8 +189,8 @@ func (c *Client) ackReader() {
 	}
 }
 
-func (c *Client) Shutdown(ctx context.Context) error {
+func (c *Client) Shutdown() {
 	close(c.stopCh)
 	c.workerWg.Wait()
-	return c.shutdowner.Shutdown(ctx)
+	_ = c.conn.Close()
 }

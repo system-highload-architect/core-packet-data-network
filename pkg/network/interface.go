@@ -5,30 +5,30 @@ import (
 	"net"
 )
 
-// Message представляет полученное сообщение.
 type Message struct {
 	Addr net.Addr
 	Data []byte
 }
 
-// Sender отправляет данные.
 type Sender interface {
 	Send(ctx context.Context, data []byte, addr net.Addr) error
 }
 
-// Receiver принимает данные.
 type Receiver interface {
 	Receive(ctx context.Context) (*Message, error)
+	// RU: Добавляем метод для чтения в готовый буфер (Zero Allocations)
+	// EN: Add a method for reading into a pre-allocated buffer (Zero Allocations)
+	ReceiveTo(buf []byte) (int, net.Addr, error)
 }
 
-// Closer закрывает соединение.
 type Closer interface {
 	Close() error
 }
 
-// Transport объединяет все интерфейсы.
 type Transport interface {
 	Sender
+	// RU: Встраиваем обновленный Receiver
+	// EN: Embed the updated Receiver interface
 	Receiver
 	Closer
 	Addr() net.Addr

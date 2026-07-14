@@ -255,3 +255,58 @@ func (c *Cache[K, V]) cleanup() {
 		}
 	}
 }
+
+// PeekTail возвращает ключ, значение и время истечения самого старого элемента из хвоста (без удаления).
+// PeekTail returns the oldest item from the tail along with its expiration time without evicting it.
+func (c *Cache[K, V]) PeekTail() (K, V, time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.tail == nil {
+		var zeroK K
+		var zeroV V
+		return zeroK, zeroV, time.Time{}, false
+	}
+	return c.tail.key, c.tail.value, c.tail.expiresAt, true
+}
+
+// PopTail извлекает (удаляет и возвращает) самый старый элемент из хвоста очереди.
+// PopTail evicts and returns the absolute oldest item from the queue tail.
+func (c *Cache[K, V]) PopTail() (K, V, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.tail == nil {
+		var zeroK K
+		var zeroV V
+		return zeroK, zeroV, false
+	}
+	n := c.tail
+	c.removeNode(n)
+	delete(c.items, n.key)
+
+	// RU: НЕ вызываем scheduleFinalize, так как узел извлекается для ретрансмиссии/переноса слоев
+	// EN: Explicitly bypass finalization since node is popped for layer promotion routines
+	return n.key, n.value, true
+}
+
+// SetWithTTL принудительно устанавливает элемент с кастомным TTL (для точного экспоненциального backoff)
+// SetWithTTL overrides and forces a specific expiration window duration onto an item
+func (c *Cache[K, V]) SetWithTTL(key K, value V, customTTL time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.stopped {
+		return
+	}
+	if old, ok := c.items[key]; ok {
+		c.removeNode(old)
+	}
+	node := &node[K, V]{
+		key:       key,
+		value:     value,
+		expiresAt: c.now().Add(customTTL),
+	}
+	c.items[key] = node
+	c.insertHead(node)
+}

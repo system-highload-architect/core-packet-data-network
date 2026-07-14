@@ -1,7 +1,7 @@
 package network
 
 import (
-	"context"
+	"fmt"
 	"net"
 
 	"github.com/ishidawataru/sctp"
@@ -39,11 +39,11 @@ func (ln *SCTPListener) Accept() (*SCTPConn, error) {
 	if sctpConn, ok := conn.(*sctp.SCTPConn); ok {
 		return &SCTPConn{conn: sctpConn}, nil
 	}
-	return nil, nil // или ошибка, если не удалось привести
+	return nil, fmt.Errorf("accepted connection is not a valid SCTP connection")
 }
 
-// Close закрывает слушатель.
-func (ln *SCTPListener) Close(ctx context.Context) error {
+// Close закрывает слушатель (без контекста).
+func (ln *SCTPListener) Close() error {
 	return ln.listener.Close()
 }
 

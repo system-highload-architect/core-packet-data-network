@@ -3,50 +3,55 @@ package main
 import (
 	"context"
 	"flag"
+	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"core-packet-data-network/internal/common/logger"
-	udpfec "core-packet-data-network/internal/variants/udp-fec"
+	udpfec "core-packet-data-network/internal/variants/udp-fec" // Импортируем наш пакет udpfec
 )
 
 func main() {
-	var (
-		listenAddr = flag.String("addr", "127.0.0.1:7000", "listen address")
-		dataShards = flag.Int("data-shards", 4, "FEC data shards count")
-		debug      = flag.Bool("debug", false, "debug logging")
-	)
+	// RU: Парсим адрес из консоли
+	// EN: Parse listening address from console
+	addr := flag.String("addr", "127.0.0.1:7000", "UDP+FEC server listen address")
+	shards := flag.Int("shards", 4, "number of data shards for FEC")
 	flag.Parse()
 
-	logLevel := logger.LevelInfo
-	if *debug {
-		logLevel = logger.LevelDebug
-	}
-	log := logger.New(logger.WithLevel(logLevel))
+	log := logger.New(logger.WithLevel(logger.LevelInfo), logger.WithOutput(os.Stdout))
+	log.Info("initializing UDP+FEC server application")
 
-	cfg := &udpfec.Config{
-		ServerAddr: *listenAddr,
-		DataShards: *dataShards,
-	}
+	cfg := udpfec.DefaultConfig()
+	cfg.ServerAddr = *addr
+	cfg.DataShards = *shards
+	cfg.BenchMode = false // RU: Включаем полноценный вывод и обработку | EN: Enable full output processing
 
-	server, err := udpfec.NewServer(cfg, log)
+	server, err := udpfec.NewServer(cfg, log, os.Stdout)
 	if err != nil {
-		log.Fatal("server create: %v", err)
+		log.Error("failed to create UDP+FEC server instance", "error", err)
+		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		if err := server.Run(); err != nil {
-			log.Error("run error: %v", err)
+			log.Error("UDP+FEC server runtime error", "error", err)
 		}
-		stop()
 	}()
 
-	<-ctx.Done()
-	if err := server.Shutdown(context.Background()); err != nil {
-		log.Error("shutdown error: %v", err)
+	<-sigCh
+	log.Info("interruption signal received, initiating graceful shutdown")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Error("error during UDP+FEC server shutdown", "error", err)
+		os.Exit(1)
 	}
-	log.Info("server finished")
+
+	log.Info("UDP+FEC server stopped cleanly")
 }

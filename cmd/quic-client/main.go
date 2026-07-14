@@ -1,62 +1,37 @@
 package main
 
-// import (
-// 	"context"
-// 	"flag"
-// 	"os/signal"
-// 	"syscall"
+import (
+	"flag"
+	"os"
 
-// 	"core-packet-data-network/internal/common/logger"
-// 	"core-packet-data-network/internal/variants/quic"
-// )
+	"core-packet-data-network/internal/common/logger"
+	"core-packet-data-network/internal/variants/quic"
+)
 
-// func main() {
-// 	var (
-// 		serverAddr   = flag.String("addr", "127.0.0.1:4242", "server address")
-// 		total        = flag.Uint64("n", 10000, "total packets to send")
-// 		maxSize      = flag.Int("max-size", 1400, "max packet data size")
-// 		maxRetries   = flag.Int("retries", 3, "max retransmissions")
-// 		retryTimeout = flag.Duration("retry-timeout", 100_000_000, "retry timeout") // 100ms
-// 		tlsCert      = flag.String("cert", "certs/cert.pem", "TLS certificate")
-// 		tlsKey       = flag.String("key", "certs/key.pem", "TLS key")
-// 		debug        = flag.Bool("debug", false, "enable debug logging")
-// 	)
-// 	flag.Parse()
+func main() {
+	serverAddr := flag.String("server", "127.0.0.1:8000", "QUIC server target address")
+	totalPackets := flag.Uint64("packets", 10000, "total packets to transmit via QUIC")
+	flag.Parse()
 
-// 	logLevel := logger.LevelInfo
-// 	if *debug {
-// 		logLevel = logger.LevelDebug
-// 	}
-// 	log := logger.New(logger.WithLevel(logLevel))
+	log := logger.New(logger.WithLevel(logger.LevelInfo), logger.WithOutput(os.Stdout))
+	log.Info("initializing TLS-secured QUIC client application")
 
-// 	cfg := &quic.ClientConfig{
-// 		ServerAddr:    *serverAddr,
-// 		TotalPackets:  *total,
-// 		MaxPacketSize: *maxSize,
-// 		MaxRetries:    *maxRetries,
-// 		RetryTimeout:  *retryTimeout,
-// 		TLSCert:       *tlsCert,
-// 		TLSKey:        *tlsKey,
-// 	}
+	cfg := quic.DefaultConfig()
+	cfg.ServerAddr = *serverAddr
+	cfg.TotalPackets = *totalPackets
+	cfg.BenchMode = false
 
-// 	client, err := quic.NewClient(cfg, log)
-// 	if err != nil {
-// 		log.Fatal("failed to create client: %v", err)
-// 	}
+	client, err := quic.NewClient(cfg, log, os.Stdout)
+	if err != nil {
+		log.Error("failed to create QUIC client instance", "error", err)
+		os.Exit(1)
+	}
 
-// 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-// 	defer stop()
+	if err := client.Run(); err != nil {
+		log.Error("QUIC client execution failed", "error", err)
+		os.Exit(1)
+	}
 
-// 	go func() {
-// 		if err := client.Run(); err != nil {
-// 			log.Error("client run error: %v", err)
-// 		}
-// 		stop()
-// 	}()
-
-// 	<-ctx.Done()
-// 	if err := client.Shutdown(context.Background()); err != nil {
-// 		log.Error("shutdown error: %v", err)
-// 	}
-// 	log.Info("client finished")
-// }
+	client.Shutdown()
+	log.Info("QUIC client session terminated successfully")
+}

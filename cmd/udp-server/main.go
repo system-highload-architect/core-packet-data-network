@@ -6,46 +6,52 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"core-packet-data-network/internal/common/logger"
 	"core-packet-data-network/internal/variants/udp"
 )
 
 func main() {
-	var (
-		listenAddr = flag.String("addr", "127.0.0.1:6000", "listen address")
-		debug      = flag.Bool("debug", false, "debug logging")
-	)
+	// RU: Парсим флаги командной строки
+	// EN: Parse command-line flags
+	addr := flag.String("addr", "127.0.0.1:6000", "UDP server listen address")
 	flag.Parse()
 
-	logLevel := logger.LevelInfo
-	if *debug {
-		logLevel = logger.LevelDebug
-	}
-	log := logger.New(logger.WithLevel(logLevel))
+	log := logger.New(logger.WithLevel(logger.LevelInfo), logger.WithOutput(os.Stdout))
+	log.Info("initializing UDP server application")
 
-	cfg := &udp.Config{
-		ServerAddr: *listenAddr,
-	}
+	cfg := udp.DefaultConfig()
+	cfg.ServerAddr = *addr
+	cfg.BenchMode = false // RU: В консольном режиме честно выводим данные | EN: In console mode, stream data properly
 
 	server, err := udp.NewServer(cfg, log, os.Stdout)
 	if err != nil {
-		log.Fatal("server create: %v", err)
+		log.Error("failed to create UDP server instance", "error", err)
+		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// RU: Канал для перехвата системных сигналов прерывания (Graceful Shutdown)
+	// EN: Channel to intercept OS interruption signals (Graceful Shutdown)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		if err := server.Run(); err != nil {
-			log.Error("run error: %v", err)
+			log.Error("UDP server runtime error", "error", err)
 		}
-		stop()
 	}()
 
-	<-ctx.Done()
-	if err := server.Shutdown(context.Background()); err != nil {
-		log.Error("shutdown error: %v", err)
+	<-sigCh
+	log.Info("interruption signal received, initiating graceful shutdown")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Error("error during UDP server shutdown", "error", err)
+		os.Exit(1)
 	}
-	log.Info("server finished")
+
+	log.Info("UDP server stopped cleanly")
 }

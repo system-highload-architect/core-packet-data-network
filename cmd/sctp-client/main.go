@@ -1,58 +1,37 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"os/signal"
-	"syscall"
+	"os"
 
 	"core-packet-data-network/internal/common/logger"
 	"core-packet-data-network/internal/variants/sctp"
 )
 
 func main() {
-	var (
-		remoteAddr = flag.String("addr", "127.0.0.1:5000", "server address")
-		total      = flag.Uint64("n", 10000, "total packets")
-		maxSize    = flag.Int("max-size", 1400, "max data size")
-		maxRetries = flag.Int("retries", 3, "max retransmissions")
-		retryTO    = flag.Duration("retry-timeout", 100_000_000, "retry timeout")
-		debug      = flag.Bool("debug", false, "debug logging")
-	)
+	serverAddr := flag.String("server", "127.0.0.1:9000", "SCTP server target address")
+	totalPackets := flag.Uint64("packets", 10000, "total packets to transmit via SCTP")
 	flag.Parse()
 
-	logLevel := logger.LevelInfo
-	if *debug {
-		logLevel = logger.LevelDebug
-	}
-	log := logger.New(logger.WithLevel(logLevel))
+	log := logger.New(logger.WithLevel(logger.LevelInfo), logger.WithOutput(os.Stdout))
+	log.Info("initializing high-performance SCTP client application")
 
-	cfg := &sctp.Config{
-		RemoteAddr:    *remoteAddr,
-		TotalPackets:  *total,
-		MaxPacketSize: *maxSize,
-		MaxRetries:    *maxRetries,
-		RetryTimeout:  *retryTO,
-	}
+	cfg := sctp.DefaultConfig()
+	cfg.ServerAddr = *serverAddr
+	cfg.TotalPackets = *totalPackets
+	cfg.BenchMode = false
 
-	client, err := sctp.NewClient(cfg, log)
+	client, err := sctp.NewClient(cfg, log, os.Stdout)
 	if err != nil {
-		log.Fatal("client create: %v", err)
+		log.Error("failed to create SCTP client instance", "error", err)
+		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		if err := client.Run(); err != nil {
-			log.Error("run error: %v", err)
-		}
-		stop()
-	}()
-
-	<-ctx.Done()
-	if err := client.Shutdown(context.Background()); err != nil {
-		log.Error("shutdown error: %v", err)
+	if err := client.Run(); err != nil {
+		log.Error("SCTP client session runtime failed", "error", err)
+		os.Exit(1)
 	}
-	log.Info("client finished")
+
+	client.Shutdown()
+	log.Info("SCTP client session completed successfully")
 }
