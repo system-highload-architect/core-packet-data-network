@@ -27,7 +27,8 @@ go work use ./pkg/lru
 go work use ./pkg/network
 go work use ./pkg/order
 go work use ./pkg/packet
-go work use ./pkg/pregen       # RU: Исправлено: Добавили пропущенный модуль Арены предгенерации
+go work use ./pkg/pregen
+
 go work use ./pkg/shutdown
 go work use ./pkg/workerpool
 go work use ./pkg/zeroalloc
