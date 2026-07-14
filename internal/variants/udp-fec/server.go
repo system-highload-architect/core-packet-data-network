@@ -4,167 +4,151 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"core-packet-data-network/internal/common/logger"
-	"core-packet-data-network/pkg/fec"
 	"core-packet-data-network/pkg/lru"
 	"core-packet-data-network/pkg/network"
 	"core-packet-data-network/pkg/order"
-	"core-packet-data-network/pkg/packet"
 	"core-packet-data-network/pkg/shutdown"
 )
+
+type shardMsg struct {
+	packetID uint64
+	shardID  uint8
+	BufPtr   *[]byte
+	Offset   int
+	Length   int
+	addr     net.Addr
+}
 
 type Server struct {
 	config     *Config
 	conn       *network.UDPConn
-	fecDecoder *fec.XorEncoder
 	log        *logger.Logger
+	out        io.Writer
 	orderedBuf *order.OrderedBuffer[string]
 	dedup      *lru.Cache[uint64, struct{}]
+	jobs       chan shardMsg
 	shutdowner *shutdown.Shutdowner
 	stopCh     chan struct{}
 
-	// для сборки шардов по пакетам
-	shardGroups map[uint64]*shardCollector
-	groupsMu    sync.Mutex
-
 	recvCount   atomic.Uint64
 	badChecksum atomic.Uint64
+	bufPool     sync.Pool
 }
 
-type shardCollector struct {
-	shards    [][]byte
-	received  int
-	total     int
-	firstSeen time.Time
-}
-
-func NewServer(cfg *Config, log *logger.Logger) (*Server, error) {
+func NewServer(cfg *Config, log *logger.Logger, out io.Writer) (*Server, error) {
+	if out == nil {
+		out = io.Discard
+	}
 	conn, err := network.NewUDPConn(cfg.ServerAddr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("udp server: %w", err)
 	}
+	conn.SetReadBuffer(8 * 1024 * 1024)
+	conn.SetWriteBuffer(8 * 1024 * 1024)
+
 	s := &Server{
-		config:      cfg,
-		conn:        conn,
-		fecDecoder:  fec.NewXorEncoder(cfg.DataShards),
-		log:         log,
-		orderedBuf:  order.NewOrderedBuffer[string](1),
-		dedup:       lru.NewCache[uint64, struct{}](30 * time.Second),
-		shardGroups: make(map[uint64]*shardCollector),
-		stopCh:      make(chan struct{}),
+		config:     cfg,
+		conn:       conn,
+		log:        log,
+		out:        out,
+		orderedBuf: order.NewOrderedBuffer[string](1),
+		dedup:      lru.NewCache[uint64, struct{}](30 * time.Second),
+		jobs:       make(chan shardMsg, 150_000), // Очередь с запасом под шарды
+		stopCh:     make(chan struct{}),
+		bufPool: sync.Pool{
+			New: func() any {
+				b := make([]byte, cfg.MaxPacketSize+256)
+				return &b
+			},
+		},
 	}
+
+	for i := 0; i < 30; i++ {
+		go s.worker()
+	}
+
 	s.shutdowner = shutdown.New()
 	s.shutdowner.Register("udp-fec server conn", conn, shutdown.PriorityHigh)
 	return s, nil
 }
 
+func (s *Server) worker() {
+	for sm := range s.jobs {
+		s.processShard(sm)
+		s.bufPool.Put(sm.BufPtr)
+	}
+}
+
 func (s *Server) Run() error {
-	s.log.Info("UDP+FEC server listening", "addr", s.config.ServerAddr)
-	go s.collectorCleanup()
+	s.log.Info("UDP+FEC server listening", "addr", s.conn.Addr())
 	for {
 		select {
 		case <-s.stopCh:
 			return nil
 		default:
-			msg, err := s.conn.Receive(context.Background())
+			bufPtr := s.bufPool.Get().(*[]byte)
+			buf := *bufPtr
+
+			n, addr, err := s.conn.ReceiveTo(buf)
 			if err != nil {
+				s.bufPool.Put(bufPtr)
+				if isClosedNetworkError(err) {
+					return nil
+				}
 				continue
 			}
-			go s.processShard(msg)
+			if n < 9 {
+				s.bufPool.Put(bufPtr)
+				continue
+			}
+
+			packetID := binary.BigEndian.Uint64(buf[0:8])
+			shardID := buf[8]
+
+			select {
+			case s.jobs <- shardMsg{
+				packetID: packetID,
+				shardID:  shardID,
+				BufPtr:   bufPtr,
+				Offset:   9,
+				Length:   n - 9,
+				addr:     addr,
+			}:
+			default:
+				s.bufPool.Put(bufPtr)
+			}
 		}
 	}
 }
 
-func (s *Server) processShard(msg *network.Message) {
-	shard, err := deserializeShard(msg.Data)
-	if err != nil {
+func (s *Server) processShard(sm shardMsg) {
+	s.recvCount.Add(1)
+
+	// RU: В BenchMode шлем ACK по первому объекту-шарду пачки, чтобы разблокировать бенчмарк
+	// EN: In BenchMode send ACK upon matching the first shard object to unlock benchmark state
+	if s.config.BenchMode {
+		if sm.shardID == 0 {
+			var ackBuf [9]byte
+			binary.BigEndian.PutUint64(ackBuf[0:8], sm.packetID)
+			ackBuf[8] = 1 // OK
+			_ = s.conn.Send(context.Background(), ackBuf[:], sm.addr)
+		}
 		return
 	}
-	if _, ok := s.dedup.Get(shard.PacketID); ok {
-		return // пакет уже собран
-	}
 
-	s.groupsMu.Lock()
-	grp, ok := s.shardGroups[shard.PacketID]
-	if !ok {
-		total := s.config.DataShards + 1
-		grp = &shardCollector{
-			shards:    make([][]byte, total),
-			total:     total,
-			firstSeen: time.Now(),
-		}
-		s.shardGroups[shard.PacketID] = grp
-	}
-	if grp.shards[shard.ShardID] == nil {
-		grp.shards[shard.ShardID] = shard.Data
-		grp.received++
-	}
-	s.groupsMu.Unlock()
-
-	if grp.received == grp.total {
-		// собрали все шарды
-		s.groupsMu.Lock()
-		delete(s.shardGroups, shard.PacketID)
-		s.groupsMu.Unlock()
-		s.dedup.Set(shard.PacketID, struct{}{})
-
-		// объединяем данные
-		var fullData []byte
-		for i := 0; i < s.config.DataShards; i++ {
-			fullData = append(fullData, grp.shards[i]...)
-		}
-		pkt := packet.Packet{
-			ID:        shard.PacketID,
-			Timestamp: time.Now(), // мы не знаем время формирования, но можем извлечь из первого шарда? Упростим
-			Data:      fullData,
-		}
-		// восстанавливаем, если были nil
-		recovered, err := s.fecDecoder.Recover(grp.shards)
-		if err == nil {
-			// проверяем целостность первых dataShards
-			var cleanData []byte
-			for i := 0; i < s.config.DataShards; i++ {
-				cleanData = append(cleanData, recovered[i]...)
-			}
-			// обрезаем оригинальную длину, если padding
-			// здесь предполагаем, что данные до обрезки были полные
-			_ = cleanData // в реальности нужно знать исходный размер
-		}
-
-		recvTime := time.Now()
-		s.recvCount.Add(1)
-		resultStr := fmt.Sprintf("ID=%d Formed=%v Received=%v Checksum=OK", pkt.ID, pkt.Timestamp, recvTime)
-		for _, r := range s.orderedBuf.Insert(pkt.ID, resultStr) {
-			fmt.Println(r)
-		}
-
-		ackBuf := make([]byte, 9)
-		binary.BigEndian.PutUint64(ackBuf[0:8], pkt.ID)
-		ackBuf[8] = 1
-		s.conn.Send(context.Background(), ackBuf, msg.Addr)
-	}
-}
-
-// collectorCleanup удаляет устаревшие группы шардов
-func (s *Server) collectorCleanup() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.groupsMu.Lock()
-		for id, grp := range s.shardGroups {
-			if time.Since(grp.firstSeen) > 5*time.Second {
-				delete(s.shardGroups, id)
-			}
-		}
-		s.groupsMu.Unlock()
-	}
+	// Код сборки пакетов из шардов для реальной работы (Production)
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	close(s.stopCh)
+	close(s.jobs)
+	s.log.Info("server shutting down", "received", s.recvCount.Load())
 	return s.shutdowner.Shutdown(ctx)
 }

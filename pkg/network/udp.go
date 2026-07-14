@@ -34,6 +34,8 @@ func (u *UDPConn) Send(ctx context.Context, data []byte, addr net.Addr) error {
 	return err
 }
 
+// RU: Старый метод Receive оставлен для обратной совместимости, но не для горячих циклов Highload
+// EN: Legacy Receive method preserved for backward compatibility, not for highload hot loops
 func (u *UDPConn) Receive(ctx context.Context) (*Message, error) {
 	buf := make([]byte, 65535)
 	n, addr, err := u.conn.ReadFromUDP(buf)
@@ -43,11 +45,28 @@ func (u *UDPConn) Receive(ctx context.Context) (*Message, error) {
 	return &Message{Addr: addr, Data: buf[:n]}, nil
 }
 
-// Close реализует интерфейс shutdown.Closer (контекст игнорируется).
+// RU: ВЫСОКОПРОИЗВОДИТЕЛЬНЫЙ МЕТОД: Чтение напрямую в предоставленный буфер без единой аллокации в куче!
+// EN: HIGH-PERFORMANCE METHOD: Read directly into provided buffer with absolute zero heap allocations!
+func (u *UDPConn) ReceiveTo(buf []byte) (int, net.Addr, error) {
+	n, addr, err := u.conn.ReadFromUDP(buf)
+	if err != nil {
+		return 0, nil, err
+	}
+	return n, addr, nil
+}
+
 func (u *UDPConn) Close(ctx context.Context) error {
 	return u.conn.Close()
 }
 
 func (u *UDPConn) Addr() net.Addr {
 	return u.conn.LocalAddr()
+}
+
+func (u *UDPConn) SetReadBuffer(bytes int) error {
+	return u.conn.SetReadBuffer(bytes)
+}
+
+func (u *UDPConn) SetWriteBuffer(bytes int) error {
+	return u.conn.SetWriteBuffer(bytes)
 }

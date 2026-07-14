@@ -10,8 +10,7 @@ type Config struct {
 	MaxRetries    int
 	RetryTimeout  time.Duration
 	BenchMode     bool
-	PregenPackets [][]byte      // если не nil, используется вместо генерации
-	SendInterval  time.Duration // интервал между пакетами в генераторе (0 = без задержки)
+	PregenPackets [][]byte
 }
 
 func DefaultConfig() *Config {

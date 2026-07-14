@@ -173,7 +173,7 @@ func TestQUICConn(t *testing.T) {
 
 	clientConfig := tlsConfig.Clone()
 	clientConfig.InsecureSkipVerify = true
-	client, err := NewQUICConnClient(listener.Addr().String(), clientConfig)
+	client, err := NewQUICConnClient(context.Background(), listener.Addr().String(), clientConfig)
 	if err != nil {
 		t.Skipf("QUIC client error: %v", err)
 	}

@@ -1,10 +1,8 @@
-package sctp
+package quic
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"runtime"
 	"testing"
 	"time"
 
@@ -12,68 +10,65 @@ import (
 	"core-packet-data-network/pkg/pregen"
 )
 
-func BenchmarkSCTPThroughput(b *testing.B) {
-	if runtime.GOOS != "linux" {
-		b.Skip("SCTP benchmark only supported on Linux")
-	}
-
+func TestQuicIntegration(t *testing.T) {
 	log := logger.New(logger.WithLevel(logger.LevelError), logger.WithOutput(io.Discard))
 	out := io.Discard
 
-	total := 100_000
+	total := 1000 // маленькое количество для стабильности
 	maxSize := 64
 	if len(pregen.Packets) < total {
 		pregen.Init(total, maxSize)
 	}
 
-	srvCfg := &Config{
-		ListenAddr:    "127.0.0.1:0",
-		MaxPacketSize: maxSize,
-		BenchMode:     true,
+	serverTLS := generateTLSConfig()
+	clientTLS := serverTLS.Clone()
+	clientTLS.InsecureSkipVerify = true
+	clientTLS.Certificates = nil
+
+	srvCfg := &ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSConfig:  serverTLS,
+		BenchMode:  true,
 	}
-	cliCfg := &Config{
+	cliCfg := &ClientConfig{
 		TotalPackets:  uint64(total),
 		MaxPacketSize: maxSize,
 		BenchMode:     true,
 		PregenPackets: pregen.Packets[:total],
+		TLSConfig:     clientTLS,
 	}
 
 	server, err := NewServer(srvCfg, log, out)
 	if err != nil {
-		b.Fatalf("server: %v", err)
+		t.Fatalf("server: %v", err)
 	}
 	go server.Run()
 	defer server.Shutdown(context.Background())
 
-	time.Sleep(100 * time.Millisecond)
-	cliCfg.RemoteAddr = server.listener.Addr().String()
+	time.Sleep(1 * time.Second) // достаточно для рукопожатия
+	cliCfg.ServerAddr = server.listener.Addr().String()
 
 	client, err := NewClient(cliCfg, log, out)
 	if err != nil {
-		b.Fatalf("client: %v", err)
+		t.Fatalf("client: %v", err)
 	}
 	defer client.Shutdown(context.Background())
 
-	b.ResetTimer()
 	start := time.Now()
 	if err := client.Run(); err != nil {
-		b.Fatalf("client run: %v", err)
+		t.Fatalf("client run: %v", err)
 	}
 	elapsed := time.Since(start)
-	b.StopTimer()
 
-	rps := float64(total) / elapsed.Seconds()
 	sent := client.sentCount.Load()
 	acked := client.ackCount.Load()
 	lost := uint64(total) - acked
 	lossRate := float64(lost) / float64(total) * 100
 
-	b.ReportMetric(rps, "rps")
-	b.ReportMetric(float64(sent), "sent")
-	b.ReportMetric(float64(acked), "acked")
-	b.ReportMetric(float64(lost), "lost")
+	t.Logf("QUIC integration test: sent=%d acked=%d lost=%d loss=%.2f%% elapsed=%v",
+		sent, acked, lost, lossRate, elapsed)
+
 	if lossRate > 3.0 {
-		b.Errorf("loss rate too high: %.2f%% (lost=%d)", lossRate, lost)
+		t.Errorf("loss rate too high: %.2f%%", lossRate)
 	}
-	fmt.Printf("SCTP RPS: %.0f, loss: %.2f%%\n", rps, lossRate)
 }

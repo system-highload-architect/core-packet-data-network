@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"core-packet-data-network/internal/common/logger"
+	"core-packet-data-network/pkg/lru"
 	"core-packet-data-network/pkg/network"
 	"core-packet-data-network/pkg/order"
 	"core-packet-data-network/pkg/packet"
@@ -24,13 +25,23 @@ type Server struct {
 	log        *logger.Logger
 	out        io.Writer
 	orderedBuf *order.OrderedBuffer[string]
-	dedup      map[uint64]struct{}
-	dedupMu    sync.Mutex
+	dedup      *lru.Cache[uint64, struct{}]
 	shutdowner *shutdown.Shutdowner
 	stopCh     chan struct{}
+	jobs       chan jobMessage
+	outputCh   chan string
 
 	recvCount   atomic.Uint64
 	badChecksum atomic.Uint64
+	bufPool     sync.Pool
+}
+
+// RU: Передаем четкую структуру с указателем на массив из пула и реальной длиной данных
+// EN: Pass a clear structure containing a pointer to the pool array and the actual data length
+type jobMessage struct {
+	BufPtr *[]byte
+	Length int
+	Addr   net.Addr
 }
 
 func NewServer(cfg *Config, log *logger.Logger, out io.Writer) (*Server, error) {
@@ -42,19 +53,56 @@ func NewServer(cfg *Config, log *logger.Logger, out io.Writer) (*Server, error) 
 		return nil, fmt.Errorf("udp server: %w", err)
 	}
 
+	conn.SetReadBuffer(8 * 1024 * 1024)
+	conn.SetWriteBuffer(8 * 1024 * 1024)
+
 	s := &Server{
 		config:     cfg,
 		conn:       conn,
 		log:        log,
 		out:        out,
 		orderedBuf: order.NewOrderedBuffer[string](1),
-		dedup:      make(map[uint64]struct{}),
+		dedup:      lru.NewCache[uint64, struct{}](30 * time.Second),
+		jobs:       make(chan jobMessage, 100_000), // RU: Буфер под максимальный объем бенчмарка | EN: Sized for maximum benchmark scale
+		outputCh:   make(chan string, 100_000),
 		stopCh:     make(chan struct{}),
+		bufPool: sync.Pool{
+			New: func() any {
+				// RU: Выделяем буфер под MTU с запасом
+				// EN: Pre-allocate maximum MTU footprint boundary buffer
+				b := make([]byte, cfg.MaxPacketSize+256)
+				return &b
+			},
+		},
 	}
+
+	for i := 0; i < 30; i++ {
+		go s.worker()
+	}
+	go s.outputPipeline()
 
 	s.shutdowner = shutdown.New()
 	s.shutdowner.Register("udp server conn", conn, shutdown.PriorityHigh)
 	return s, nil
+}
+
+func (s *Server) worker() {
+	for msg := range s.jobs {
+		// RU: Берем срез данных строго по записанной длине
+		// EN: Reslice slice explicitly using metrics tracking properties
+		data := (*msg.BufPtr)[:msg.Length]
+		s.processMessage(data, msg.Addr)
+
+		// RU: Безопасно возвращаем точный указатель обратно в пул
+		// EN: Securely return the exact pointer reference back into the pool
+		s.bufPool.Put(msg.BufPtr)
+	}
+}
+
+func (s *Server) outputPipeline() {
+	for res := range s.outputCh {
+		fmt.Fprintln(s.out, res)
+	}
 }
 
 func (s *Server) Run() error {
@@ -64,15 +112,30 @@ func (s *Server) Run() error {
 		case <-s.stopCh:
 			return nil
 		default:
-			msg, err := s.conn.Receive(context.Background())
+			// RU: Забираем указатель на базовый массив из пула
+			// EN: Lease basic array pointer wrapper directly out of pool storage
+			bufPtr := s.bufPool.Get().(*[]byte)
+			buf := *bufPtr
+
+			n, addr, err := s.conn.ReceiveTo(buf)
 			if err != nil {
+				s.bufPool.Put(bufPtr) // Возврат при ошибках чтения
 				if isClosedNetworkError(err) {
 					return nil
 				}
 				s.log.Error("receive error", "error", err)
 				continue
 			}
-			s.processMessage(msg.Data, msg.Addr)
+
+			// RU: Отправляем в канал точные метаданные
+			// EN: Pass precise pipeline metrics directly into channels execution bounds
+			select {
+			case s.jobs <- jobMessage{BufPtr: bufPtr, Length: n, Addr: addr}:
+			default:
+				// RU: Если воркеры не успевают — сбрасываем буфер назад
+				// EN: Saturated worker safety protection line
+				s.bufPool.Put(bufPtr)
+			}
 		}
 	}
 }
@@ -86,41 +149,39 @@ func (s *Server) processMessage(data []byte, addr net.Addr) {
 	recvTime := time.Now()
 	s.recvCount.Add(1)
 
+	checksumOK := pkt.VerifyChecksum()
+	if !checksumOK {
+		s.badChecksum.Add(1)
+	}
+
 	if !s.config.BenchMode {
-		s.dedupMu.Lock()
-		if _, ok := s.dedup[pkt.ID]; ok {
-			s.dedupMu.Unlock()
+		if _, ok := s.dedup.Get(pkt.ID); ok {
 			return
 		}
-		s.dedup[pkt.ID] = struct{}{}
-		s.dedupMu.Unlock()
+		s.dedup.Set(pkt.ID, struct{}{})
 
 		resultStr := fmt.Sprintf("ID=%d Formed=%v Received=%v Checksum=", pkt.ID,
 			pkt.Timestamp.Format(time.RFC3339Nano), recvTime.Format(time.RFC3339Nano))
-		checksumOK := pkt.VerifyChecksum()
 		if checksumOK {
 			resultStr += "OK"
 		} else {
 			resultStr += "FAIL"
-			s.badChecksum.Add(1)
 		}
+
 		for _, r := range s.orderedBuf.Insert(pkt.ID, resultStr) {
-			fmt.Fprintln(s.out, r)
-		}
-	} else {
-		if !pkt.VerifyChecksum() {
-			s.badChecksum.Add(1)
+			s.outputCh <- r
 		}
 	}
 
-	ackBuf := make([]byte, 9)
+	var ackBuf [9]byte
 	binary.BigEndian.PutUint64(ackBuf[0:8], pkt.ID)
-	if pkt.VerifyChecksum() {
+	if checksumOK {
 		ackBuf[8] = 1
 	} else {
 		ackBuf[8] = 0
 	}
-	if err := s.conn.Send(context.Background(), ackBuf, addr); err != nil {
+
+	if err := s.conn.Send(context.Background(), ackBuf[:], addr); err != nil {
 		if !isClosedNetworkError(err) {
 			s.log.Error("ack send error", "id", pkt.ID, "error", err)
 		}
@@ -129,6 +190,8 @@ func (s *Server) processMessage(data []byte, addr net.Addr) {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	close(s.stopCh)
+	close(s.jobs)
+	close(s.outputCh)
 	s.log.Info("server shutting down",
 		"received", s.recvCount.Load(),
 		"bad_checksum", s.badChecksum.Load(),

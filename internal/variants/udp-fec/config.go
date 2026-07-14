@@ -7,9 +7,11 @@ type Config struct {
 	ClientAddr    string
 	TotalPackets  uint64
 	MaxPacketSize int
-	DataShards    int // например, 4
+	DataShards    int // количество шардов данных (parity = 1)
 	MaxRetries    int
 	RetryTimeout  time.Duration
+	BenchMode     bool
+	PregenPackets [][]byte
 }
 
 func DefaultConfig() *Config {

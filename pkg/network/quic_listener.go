@@ -20,17 +20,20 @@ func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*QUICListener, er
 		return nil, err
 	}
 	quicConf := &quic.Config{
-		EnableDatagrams: true,
-		KeepAlivePeriod: 5 * time.Second,
-		MaxIdleTimeout:  30 * time.Second,
+		EnableDatagrams:       true,
+		MaxIncomingStreams:    1000,
+		MaxIncomingUniStreams: 1000,
+		KeepAlivePeriod:       5 * time.Second,
+		MaxIdleTimeout:        30 * time.Second,
 	}
 	listener, err := quic.ListenAddr(addr.String(), tlsConfig, quicConf)
 	if err != nil {
 		return nil, err
 	}
+	// Сохраняем фактический адрес, который дал слушатель (с портом)
 	return &QUICListener{
 		listener: listener,
-		addr:     addr,
+		addr:     listener.Addr(),
 	}, nil
 }
 

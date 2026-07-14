@@ -1,10 +1,13 @@
 package packet
 
 import (
+	"crypto/sha256"
 	"testing"
 	"time"
 )
 
+// RU: Тест сериализации и десериализации пакета с проверкой точности данных
+// EN: Test case covering end-to-end packet data serialization and deserialization
 func TestPacket_SerializeDeserialize(t *testing.T) {
 	orig := Packet{
 		ID:        12345,
@@ -12,8 +15,9 @@ func TestPacket_SerializeDeserialize(t *testing.T) {
 		Data:      []byte("hello world"),
 		Extra:     []byte("extra"),
 	}
-	// Принудительно вычисляем контрольную сумму
-	orig.Checksum = ComputeChecksum(orig.Data)
+	// RU: Рассчитываем контрольную сумму напрямую в структуру массива
+	// EN: Compute and assign message checksum directly into the fixed-size structure array
+	orig.Checksum = sha256.Sum256(orig.Data)
 
 	data, err := orig.Serialize()
 	if err != nil {
@@ -28,6 +32,8 @@ func TestPacket_SerializeDeserialize(t *testing.T) {
 	if restored.ID != orig.ID {
 		t.Errorf("ID mismatch: got %d, want %d", restored.ID, orig.ID)
 	}
+	// RU: Округление до наносекунд для точного сравнения времени в разных ОС
+	// EN: Bound timestamps to nanosecond constraints ensuring accurate platform assertions
 	if !restored.Timestamp.Equal(orig.Timestamp) {
 		t.Errorf("Timestamp mismatch: got %v, want %v", restored.Timestamp, orig.Timestamp)
 	}
@@ -42,30 +48,27 @@ func TestPacket_SerializeDeserialize(t *testing.T) {
 	}
 }
 
+// RU: Тест валидации поврежденных данных и несовпадения контрольных сумм
+// EN: Test covering verification handling of corrupted data payloads and hash mismatches
 func TestPacket_ChecksumMismatch(t *testing.T) {
 	p := Packet{
 		ID:        1,
 		Timestamp: time.Now(),
 		Data:      []byte("test data"),
 	}
-	p.Checksum = []byte("not a valid hash") // не 32 байта
+
+	// RU: Инициализируем заведомо неверную контрольную сумму
+	// EN: Intentionally initialize an invalid mock checksum array context
+	p.Checksum = sha256.Sum256(p.Data)
+	p.Checksum[0] ^= 0xFF // RU: Инвертируем байт, имитируя искажение в сети | EN: Invert byte mimicking network corruption
+
 	if p.VerifyChecksum() {
-		t.Error("VerifyChecksum should return false for invalid checksum length")
-	}
-	// Устанавливаем неправильную контрольную сумму
-	p.Checksum = make([]byte, 32)
-	// Контрольная сумма не соответствует данным
-	validHash := ComputeChecksum(p.Data)
-	// Инвертируем первый байт, чтобы сделать её неверной
-	invalidHash := make([]byte, 32)
-	copy(invalidHash, validHash)
-	invalidHash[0] ^= 0xFF
-	p.Checksum = invalidHash
-	if p.VerifyChecksum() {
-		t.Error("VerifyChecksum should detect mismatch")
+		t.Error("VerifyChecksum should detect mismatch on altered data bytes")
 	}
 }
 
+// RU: Тест корректной обработки граничных условий с пустыми полями
+// EN: Test confirming accurate processing of dynamic boundaries containing empty payloads
 func TestPacket_EmptyData(t *testing.T) {
 	orig := Packet{
 		ID:        999,
@@ -73,7 +76,7 @@ func TestPacket_EmptyData(t *testing.T) {
 		Data:      []byte{},
 		Extra:     []byte{},
 	}
-	orig.Checksum = ComputeChecksum(orig.Data)
+	orig.Checksum = sha256.Sum256(orig.Data)
 
 	data, err := orig.Serialize()
 	if err != nil {
@@ -84,7 +87,7 @@ func TestPacket_EmptyData(t *testing.T) {
 		t.Fatalf("Deserialize failed: %v", err)
 	}
 	if !restored.VerifyChecksum() {
-		t.Error("Checksum verification failed for empty data")
+		t.Error("Checksum verification failed for empty data structures")
 	}
 	if len(restored.Data) != 0 {
 		t.Errorf("Data should be empty, got length %d", len(restored.Data))
