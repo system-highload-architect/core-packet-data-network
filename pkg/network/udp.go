@@ -39,7 +39,8 @@ func (u *UDPConn) Receive(ctx context.Context) (*Message, error) {
 	return &Message{Addr: addr, Data: buf[:n]}, nil
 }
 
-func (u *UDPConn) Close() error {
+// Close реализует интерфейс shutdown.Closer (контекст игнорируется).
+func (u *UDPConn) Close(ctx context.Context) error {
 	return u.conn.Close()
 }
 

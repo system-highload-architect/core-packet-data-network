@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"testing"
@@ -60,7 +59,7 @@ func TestUDPConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create UDP server: %v", err)
 	}
-	defer server.Close()
+	defer server.Close(ctx)
 
 	go func() {
 		msg, err := server.Receive(ctx)
@@ -81,7 +80,7 @@ func TestUDPConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create UDP client: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(ctx)
 
 	if err := client.Send(ctx, []byte("hello"), clientAddr); err != nil {
 		t.Fatalf("client send error: %v", err)
@@ -96,7 +95,7 @@ func TestSCTPConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("SCTP not supported or error: %v", err)
 	}
-	defer listener.Close()
+	defer listener.Close(ctx)
 
 	go func() {
 		conn, err := listener.Accept()
@@ -104,9 +103,10 @@ func TestSCTPConn(t *testing.T) {
 			t.Errorf("accept error: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer conn.Close(ctx)
+
 		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
+		n, err := conn.conn.Read(buf) // доступ к *sctp.SCTPConn
 		if err != nil {
 			t.Errorf("read error: %v", err)
 			return
@@ -114,7 +114,7 @@ func TestSCTPConn(t *testing.T) {
 		if string(buf[:n]) != "hello" {
 			t.Errorf("expected 'hello', got '%s'", string(buf[:n]))
 		}
-		if _, err := conn.Write([]byte("ack")); err != nil {
+		if _, err := conn.conn.Write([]byte("ack")); err != nil {
 			t.Errorf("write error: %v", err)
 		}
 	}()
@@ -125,9 +125,9 @@ func TestSCTPConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("SCTP client error: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(ctx)
 
-	if err := client.Send(ctx, []byte("hello"), client.Addr()); err != nil {
+	if err := client.Send(ctx, []byte("hello"), nil); err != nil {
 		t.Fatalf("client send error: %v", err)
 	}
 }
@@ -155,33 +155,19 @@ func TestQUICConn(t *testing.T) {
 			errCh <- fmt.Errorf("accept failed: %w", err)
 			return
 		}
-		defer conn.Close(ctx) // QUICConn.Close вызывает CloseWithError
+		defer conn.Close(ctx)
 
-		stream, err := conn.conn.AcceptStream(ctx) // доступ к *quic.Conn
+		data, err := conn.ReceiveDatagram(ctx)
 		if err != nil {
-			errCh <- fmt.Errorf("accept stream failed: %w", err)
+			errCh <- fmt.Errorf("receive datagram failed: %w", err)
 			return
 		}
-		defer stream.Close()
+		if string(data) != "hello" {
+			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(data))
+			return
+		}
 
-		var received []byte
-		buf := make([]byte, 1024)
-		for {
-			n, err := stream.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				errCh <- fmt.Errorf("read failed: %w", err)
-				return
-			}
-			received = append(received, buf[:n]...)
-		}
-		if string(received) != "hello" {
-			errCh <- fmt.Errorf("expected 'hello', got '%s'", string(received))
-			return
-		}
-		_, err = stream.Write([]byte("ack"))
+		err = conn.SendDatagram([]byte("ack"))
 		errCh <- err
 	}()
 
@@ -193,25 +179,16 @@ func TestQUICConn(t *testing.T) {
 	}
 	defer client.Close(ctx)
 
-	// Открываем поток через базовое соединение
-	stream, err := client.conn.OpenStreamSync(ctx)
-	if err != nil {
-		t.Fatalf("open stream error: %v", err)
-	}
-	defer stream.Close()
-
-	if _, err := stream.Write([]byte("hello")); err != nil {
-		t.Fatalf("write error: %v", err)
+	if err := client.SendDatagram([]byte("hello")); err != nil {
+		t.Fatalf("send datagram error: %v", err)
 	}
 
-	// Читаем ответ
-	buf := make([]byte, 1024)
-	n, err := stream.Read(buf)
+	data, err := client.ReceiveDatagram(ctx)
 	if err != nil {
-		t.Fatalf("read response error: %v", err)
+		t.Fatalf("receive datagram error: %v", err)
 	}
-	if string(buf[:n]) != "ack" {
-		t.Errorf("expected 'ack', got '%s'", string(buf[:n]))
+	if string(data) != "ack" {
+		t.Errorf("expected 'ack', got '%s'", string(data))
 	}
 
 	select {
@@ -220,6 +197,6 @@ func TestQUICConn(t *testing.T) {
 			t.Errorf("server error: %v", err)
 		}
 	case <-ctx.Done():
-		t.Error("timeout waiting for server response")
+		t.Error("timeout")
 	}
 }

@@ -4,23 +4,27 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
-// QUICListener — обёртка над quic.Listener для сервера.
 type QUICListener struct {
 	listener *quic.Listener
 	addr     net.Addr
 }
 
-// NewQUICListener создаёт QUIC-сервер (слушатель).
 func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*QUICListener, error) {
 	addr, err := net.ResolveUDPAddr("udp", localAddr)
 	if err != nil {
 		return nil, err
 	}
-	listener, err := quic.ListenAddr(addr.String(), tlsConfig, nil)
+	quicConf := &quic.Config{
+		EnableDatagrams: true,
+		KeepAlivePeriod: 5 * time.Second,
+		MaxIdleTimeout:  30 * time.Second,
+	}
+	listener, err := quic.ListenAddr(addr.String(), tlsConfig, quicConf)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +34,6 @@ func NewQUICListener(localAddr string, tlsConfig *tls.Config) (*QUICListener, er
 	}, nil
 }
 
-// Accept принимает новое QUIC-соединение.
 func (l *QUICListener) Accept(ctx context.Context) (*QUICConn, error) {
 	conn, err := l.listener.Accept(ctx)
 	if err != nil {
@@ -42,12 +45,10 @@ func (l *QUICListener) Accept(ctx context.Context) (*QUICConn, error) {
 	}, nil
 }
 
-// Close закрывает слушатель.
 func (l *QUICListener) Close(ctx context.Context) error {
 	return l.listener.Close()
 }
 
-// Addr возвращает адрес слушателя.
 func (l *QUICListener) Addr() net.Addr {
 	return l.addr
 }
